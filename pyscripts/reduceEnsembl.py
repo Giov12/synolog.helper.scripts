@@ -18,7 +18,7 @@ class SEQ:
 def get_arguments() -> tuple[str, str]:
     """get the arguments"""
 
-    d = "Some python code to filter protein sequences to the longest isoform from an ensembl peptide " \
+    d = "Some python code to filter protein sequences to the longest isoform from an ensembl peptide " + \
         "fasta and found in the assocaited annotation"
     
     parser = argparse.ArgumentParser(description = d)
