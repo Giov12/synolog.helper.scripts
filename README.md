@@ -30,3 +30,10 @@ I then take the resulting file, along with `synolog`'s orthologs.tsv output file
 ```
 ./compareToReformated.py -m reformated_orthofinder2.tsv -g ./path/to/annotations/ -s orthologs.tsv
 ```
+
+Another script that I used for the study is `treeclusters2ALGs.py`, which takes the *tree_clusters_membership.tsv* and counts the number of genes these clusters occupy after merging the clusters by the chromosomes they occupy.
+```
+./treeclusters2ALGs.py -t tree_clusters_membership.tsv
+```
+
+Since Synolog does not know which sequences are actually chromosomes, I manually filtered these results to identify which clusters represented ALGs.
