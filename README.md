@@ -37,3 +37,9 @@ Another script that I used for the study is `treeclusters2ALGs.py`, which takes 
 ```
 
 Since Synolog does not know which sequences are actually chromosomes, I manually filtered these results to identify which clusters represented ALGs.
+
+Also, for the orthobench step, since `synolog` reports orthologs using gene IDs instead of isoform/transcript IDs (given that `synolog` uses all available isoforms/transcripts), I wrote a python script to change recode the reference orthogroups used for benchmarking (these, by default use protein IDs). Also, not all protein IDs in these reference orthogroups were found in the gene annotations I used, so I had to search [ENSEMBL](https://www.ensembl.org/) to find gene IDs when possible. I used these as an extra mapping file for recoding.
+
+```
+./recodeRefOGs.py -g ./path/to/gpMaps/ -r ./path/to/RefOGs/ -e extra_gpMap.tsv -o ./outpath/RefOGs.Recoded/
+```
