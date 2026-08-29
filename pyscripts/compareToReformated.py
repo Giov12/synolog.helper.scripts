@@ -128,7 +128,7 @@ def get_arguments() -> tuple[bool, str, str, str]:
     parser.add_argument("-m", "--method",  help="reformated tsv of either orthofinder or orthomcl", required=True)
     parser.add_argument("-g", "--gtfs",    help="directory containing gtf files for focal species", required=True)
     parser.add_argument("-s", "--synolog", help="orthologs.tsv file from Synolog",                  required=True)
-    parser.add_argument("-d", "--dist",    help="distance used for sliding window",                 default=25)
+    parser.add_argument("-d", "--dist",    help="distance used for sliding window",                 default=100)
 
     args = parser.parse_args()
     fltr = args.filter
@@ -853,7 +853,7 @@ def process_superset(summary: Summary, fh) -> int:
             sgenes.sort()            
 
             # cases
-            synwindow = 25 # default for synolog
+            synwindow = 100 # default for synolog
             i         = 0 # index for synolog
 
             for ogene in ogenes:
@@ -1127,7 +1127,7 @@ def process_conflict(summary: Summary, fh) -> int:
             ogenes.sort()
             sgenes.sort()
 
-            synwindow = 25
+            synwindow = 100
             i         = 0
 
             for ogene in ogenes:
