@@ -44,7 +44,7 @@ Also, for the orthobench step, since `synolog` reports orthologs using gene IDs 
 ./recodeRefOGs.py -g ./path/to/gpMaps/ -r ./path/to/RefOGs/ -e extra_gpMap.tsv -o ./outpath/RefOGs.Recoded/
 ```
 
-I also modified the (benchmarking script)[https://github.com/davidemms/Open_Orthobench/blob/master/BENCHMARKS/benchmark.py] so that it can work at the gene-level instead of protein-level (i,e., adjusted it to the recorded RefOGs). Since I can't simply run the *orthologs.tsv* file from `synolog` through this script, I have another helper script to reformat it
+I also modified the [benchmarking script](https://github.com/davidemms/Open_Orthobench/blob/master/BENCHMARKS/benchmark.py) so that it can work at the gene-level instead of protein-level (i,e., adjusted it to the recorded RefOGs). Since I can't simply run the *orthologs.tsv* file from `synolog` through this script, I have another helper script to reformat it
 
 ```
 ./synolog_to_benchmark.py -o orthologs.tsv # generates benchmarking.orthologs.txt
