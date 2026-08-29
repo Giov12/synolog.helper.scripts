@@ -4,20 +4,30 @@ import argparse
 import os
 import glob
 import gzip
+import sys
 
-def get_arguments() -> tuple:
+ofdr     = ''    # orthogroups.tsv
+spp      = ''    # text file with new species column IDs
+mdir     = ''    # directory with gpMap files
+split_ID = False # split gene IDs to get first field in `.` separated string
+
+def get_arguments() -> int:
     """get the arguments"""
+
+    global ofdr, spp, mdir, split_ID
 
     d = "reformat the OrtoFinder output to a tsv for easier comparisons"
 
     parser = argparse.ArgumentParser(description = d)
-    parser.add_argument("-o", "--orthofinder", help="N0.tsv file", required=True)
+    parser.add_argument("-o", "--orthofinder", help="orthogroups.tsv file", required=True)
     parser.add_argument("-s", "--spp", help="text file containing names of species for columns (1 spp per line)", required=True)
     parser.add_argument("-m", "--maps", help="directory containing any map gene->protein id mappping", default='')
-    args = parser.parse_args()
-    ofdr = args.orthofinder
-    spp  = args.spp
-    mdir = args.maps
+    parser.add_argument("--split", help="split gene ID attributes if mRNA are present", action="store_true")
+    args     = parser.parse_args()
+    ofdr     = args.orthofinder
+    spp      = args.spp
+    mdir     = args.maps
+    split_ID = args.split
 
     assert os.path.isfile(ofdr), f"Could not locate file {ofdr}"
     assert os.path.isfile(spp),  f"Could not locate file {spp}"
@@ -25,10 +35,12 @@ def get_arguments() -> tuple:
     if (mdir != ''):
         assert os.path.isdir(mdir), f"Could not locate directory {mdir}"
 
-    return (ofdr, spp, mdir)
+    return 0
 
-def get_maps(mdir: str) -> dict:
+def get_maps() -> dict[dict[str: str]]:
     """get any gene->protein mapping for easier comparison"""
+
+    global mdir
 
     if (mdir == ''): return {}
 
@@ -58,8 +70,10 @@ def get_maps(mdir: str) -> dict:
 
     return gpMap
 
-def get_spp(spp: str) -> list:
+def get_spp() -> list[str]:
     """return a list of all the focal spp"""
+
+    global spp
 
     sppList = []
 
@@ -72,33 +86,34 @@ def get_spp(spp: str) -> list:
 
     return sppList
 
-
-def reformat_finder(ofdr: str, gpMap: dict, sppList: list) -> None:
+def reformat_finder(gpMap: dict[dict[str, str]], sppList: list[str]) -> int:
     """reformat each line & write out afterwards"""
+
+    global ofdr, split_ID
 
     outfile = "Reformat." + os.path.basename(ofdr)
     ofh     = open(outfile, 'w')
     fh      = gzip.open(ofdr, "rt") if ofdr.endswith(".gz") else open(ofdr, 'r')
-
-    header  = ["#GroupID"] + sppList
+    COLUMN  = 1                       # orthofinder2 value was 3
+    header  = ["#GroupID"] + sppList  # create the header
     header  = '\t'.join(header) + '\n'
     ofh.write(header)
-
-    split_ID = False
-    COLUMN   = 3
 
     for linenum, line in enumerate(fh):
         if (linenum == 0): 
             continue
         fields  = line.strip().split('\t')
-        row     = [fields[0]]
+        if (fields[0] == "Orthogroup"):
+            continue          # this is the header
+        row     = [fields[0]] # row begins with orthogroup ID
         spp_dic = {s : [] for s in sppList}
         count   = 0
-        for i in range(COLUMN, len(fields)): # use 3 if using N0.tsv
+        for i in range(COLUMN, len(fields)):
             subfield = fields[i].split(", ")
             spp      = sppList[i - COLUMN]
             for isoform in subfield:
-                if (isoform == ''): continue
+                if (isoform == ''): 
+                    continue
                 gene = ''
                 if (split_ID):
                     isoform = isoform.split('.')[0]
@@ -113,7 +128,10 @@ def reformat_finder(ofdr: str, gpMap: dict, sppList: list) -> None:
                 if (gene != ''):
                     spp_dic[spp].append(gene)
                     count += 1
-        if (count == 0):
+                else:
+                    msg = f"Unable to locate gene ID for {isoform}"
+                    sys.exit(msg)
+        if (count == 0): # skip empty rows
             continue
         for spp in sppList:
             row.append(', '.join(spp_dic[spp]) if spp_dic[spp] else '')
@@ -123,18 +141,19 @@ def reformat_finder(ofdr: str, gpMap: dict, sppList: list) -> None:
     fh.close()
     ofh.close()
 
+    return 0
 
 def main() -> int:
     """entry point to this little subprogram"""
 
     # get arguments
-    ofdr, spp, mdir = get_arguments()
+    get_arguments()
 
     # get the files
-    gpMap   = get_maps(mdir)
-    sppList = get_spp(spp)
+    gpMap   = get_maps()
+    sppList = get_spp()
 
-    reformat_finder(ofdr, gpMap, sppList)
+    reformat_finder(gpMap, sppList)
 
     return 0
 
