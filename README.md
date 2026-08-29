@@ -13,7 +13,7 @@ Another potential useful script is `ExtractLongestTranscript.py`. Several tools 
 ./ExtractLongestTranscript.py --ann ann.file.gtf.gz --fasta prot.file.fa.gz
 ```
 
-More for the paper, but I wrote several scripts to compare the results of `synolog` to that from [orthofinder2](https://github.com/davidemms/OrthoFinder).
+More for the paper, but I wrote several scripts to compare the results of `synolog` to that from [orthofinder3](https://github.com/OrthoFinder/OrthoFinder).
 The first is to convert (i.e., reformat) the isoform IDs to gene IDs, since `synolog` reports gene IDs in its outputs.
 
 The first was to create a simple two-column tsv file that maps isoform id to gene id.
@@ -21,14 +21,14 @@ The first was to create a simple two-column tsv file that maps isoform id to gen
 ./make_gtf_map.py -g file.gtf.gz
 ```
 
-In the next step, I fed the `reformatOrthoFinder.py` script the output map, the results from `orthofinder2`, a single column list with the species ids to use instead of the file ids `orthofinder2` uses to label its columns, and the path to all the gene/protein maps created with `make_gtf_map.py`. This will create a new reformated NO.tsv file that uses the *HOG* ID to identify each group of genes.
+In the next step, I fed the `reformatOrthoFinder3.py` script the output map, the results from `orthofinder3`, a single column list with the species ids to use instead of the file ids `orthofinder3` uses to label its columns, and the path to all the gene/protein maps created with `make_gtf_map.py`. This will create a new reformated NO.tsv file that uses the *HOG* ID to identify each group of genes.
 ```
-./reformatOrthoFinder.py -o N0.tsv -s spp_list.txt -m ./path/to/gene_maps/
+./reformatOrthoFinder3.py -o Orthogroups.tsv -s spp_list.txt -m ./path/to/gene_maps/
 ```
 
 I then take the resulting file, along with `synolog`'s orthologs.tsv output file, and process them through `compareToReformated.py` to compare their results (e.g., how many orthogroups are the same). I also give this script the path to the annotations since `synolog`'s ortholog inference method is synteny-based. This helped me tease apart why the two tools would produce different results.
 ```
-./compareToReformated.py -m reformated_orthofinder2.tsv -g ./path/to/annotations/ -s orthologs.tsv
+./compareToReformated.py -m reformated_orthofinder3.tsv -g ./path/to/annotations/ -s orthologs.tsv
 ```
 
 Another script that I used for the study is `treeclusters2ALGs.py`, which takes the *tree_clusters_membership.tsv* and counts the number of genes these clusters occupy after merging the clusters by the chromosomes they occupy.
