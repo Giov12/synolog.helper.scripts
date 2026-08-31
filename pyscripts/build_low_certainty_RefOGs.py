@@ -35,21 +35,26 @@ def get_arguments() -> int:
     return 0
 
 
-def load_mapping(emap: str) -> dict[str, str]:
+def load_mapping() -> dict[str, str]:
     """read the gene to transcript map into memory"""
 
-    egMap = dict()
-    fh    = open(emap, 'r')
+    global gpmap_f
+
+    if (gpmap_f == ''):
+        return {}
+    
+    pgMap = dict()
+    fh    = open(gpmap_f, 'r')
 
     for line in fh:
         fields = line.split('\t')
         gene   = fields[0]
         prot   = fields[1].strip()
-        egMap[prot] = gene
+        pgMap[prot] = gene
 
     fh.close()
 
-    return egMap
+    return pgMap
 
 def build_low_assignments(pgMap: dict[str, str]) -> int:
     """this function will handle all the reformating"""
