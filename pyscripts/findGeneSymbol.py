@@ -7,6 +7,10 @@ import sys
 
 homologs = dict()
 
+
+#
+# HARD CODED ORGS USED IN THIS STUDY
+#
 class Pair:
     __slots__ = ("chicken", "turtle")
 
@@ -21,7 +25,7 @@ def get_arguments() -> tuple[str, str]:
 
     parser = argparse.ArgumentParser(description = d)
     parser.add_argument("-H", "--homologs",  help="directory containing homolog files of with model organisms", required=True)
-    parser.add_argument("-o", "--orthologs", help="orthologs.tsv file from synolog_info.py", required=True)
+    parser.add_argument("-o", "--orthologs", help="orthologs.tsv file generated from synolog", required=True)
 
     args  = parser.parse_args()
     hDir  = args.homologs
