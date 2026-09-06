@@ -402,6 +402,7 @@ def load_other_method(omtd: str, fltr: bool) -> int:
     sppList  = list()
     totges   = set()
     duplics  = defaultdict(list)
+    orthCnts = dict()
     dups     = set() 
     fh       = gzip.open(omtd, "rt") if omtd.endswith(".gz") else open(omtd, 'r')
     ofh      = open("paralogs.genes.txt", 'w')
@@ -415,8 +416,9 @@ def load_other_method(omtd: str, fltr: bool) -> int:
     for line in fh:
         fields = line.strip().split('\t')
         if (line[0] == '#'):
-            sppList = fields[1:]
-            nSpp    = len(sppList)
+            sppList  = fields[1:]
+            nSpp     = len(sppList)
+            orthCnts = {spp : 0 for spp in sppList}
             continue
         grpId      = fields[0]
         orthogroup = OrthoGroup(grpId)
@@ -482,6 +484,10 @@ def load_other_method(omtd: str, fltr: bool) -> int:
             dups.add(okey) # store index
         duplics[okey].append(len(otherGroups))
         otherGroups.append(orthogroup)
+        if (sppcnt > 1):
+            for spp, genes in gecnter.items():
+                orthCnts[spp] += len(genes)
+
 
     fh.close()
     ofh.close()
@@ -547,6 +553,10 @@ def load_other_method(omtd: str, fltr: bool) -> int:
     ounip = totges.difference(paralogs).difference(sgenes)
     print(f"Number of Unique Genes in Synolog not found in Other Method: {len(suniq)} ({len(sunip)} excluding paralogs)")
     print(f"Number of Unique Genes in Other Method not found in Synolog: {len(ouniq)} ({len(ounip)} excluding paralogs)")
+
+    print("Number of genes per species in multi-species orthogroups:")
+    for spp, orthocnt in orthCnts.items():
+        print(f"{spp}: {orthocnt}")
 
     return 0
 
