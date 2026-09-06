@@ -20,7 +20,7 @@ go_analysis = function(input_file, out_file){
   # 71          gevgoodei_gene_ensembl             Goodes thornscrub tortoise genes (rGopEvg1_v1.p)                     rGopEvg1_v1.p
   # 157         psinensis_gene_ensembl                  Chinese softshell turtle genes (PelSin_1.0)                        PelSin_1.0
   # 
-  mart      = useMart("ensembl", dataset = "gevgoodei_gene_ensembl")
+  mart      = useEnsembl(biomart = "genes", dataset = "gevgoodei_gene_ensembl")
   attrb     = c("external_gene_name", "go_id", "name_1006", "namespace_1003")
   db        = "org.Gg.eg.db"
   goBM      = getBM(attributes = attrb, filters = "external_gene_name", values = orthos, mart = mart) %>% as_tibble()
