@@ -4,11 +4,14 @@ import argparse
 import os
 import gzip
 import glob
+import sys
 from   collections import defaultdict
 
-synologGenes  = defaultdict(list) # gene -> orthogroups
-otherGenes    = defaultdict(list)
+genesMap      = dict()
 synologGroups = list()
+synologOGs    = list() # list of orthogroups from synolog
+otherGenes    = defaultdict(list)
+
 otherGroups   = list()
 paralogs      = set()
 multiGrped    = set()
@@ -19,6 +22,13 @@ geneLocations = dict()
 keptCount     = 0
 nSpp          = 0
 
+class Gene:
+    def __init__(self, id_: str, chrom: str, start: int, end: int):
+        self.id    = id_
+        self.chrom = chrom
+        self.idx   = -1
+        self.sotho = -1 # synolog orthogroup idx
+        self.start = min(start, end)
 class OrthoGroup():
     def __init__(self, id_: str) -> None:
         self.id        = id_
@@ -29,90 +39,6 @@ class OrthoGroup():
         self.isDup     = False
         self.otherCnt  = 0     # to get some summary stats on
         
-class Summary:
-    def __init__(self) -> None:
-        self.orthoID   = ''     # other group id
-        self.status    = ''     # either Missing/Equal/Superset/Subset/MultiGroups/Conflict
-        self.othCount  = 0      # num of other members
-        self.synCount  = 0      # num of synolog members
-        self.groupCnt  = 0      # num of synolog orthogroups
-        self.groupIDs  = ''     # ids of synolog groups
-        self.singleCpy = False  # full single copy for all orgs
-        self.isDup     = False  # if the OrthoGroup is a duplicate
-        self.resolved  = False  # true only if no extras/differences
-        self.isParalog = False  # other method is single-spp group
-        self.MultiGrp  = 0      # num of this orthogroup mems that are multi-grouped
-        self.missSyn   = list() # IDs synolog are missing
-        self.missReas  = list() # predicted reasons why a gene is missing in Synolog
-        self.missOther = list() # IDs that this method didn't find
-        self.synExtras = list() # IDs not in this specific orthogroup
-        self.othExtras = list() # IDs not in Synolog's orthogroups
-        self.orthogrp  = None   # reference to the OrthoGroup() object
-
-    def add_missSyn(self, gene: str, reason: str) -> None:
-        # record the genes synolog didn't group but are in this orthogroup
-        self.missSyn.append(gene)
-        self.missReas.append(reason)
-
-    def add_synExtra(self, entry: str) -> None:
-        # notes why this gene is not in the other method's group
-        self.synExtras.append(entry)
-    
-    def add_missOther(self, gene) -> None:
-        # genes not grouped by other method
-        self.missOther.append(gene)
-
-    def add_othExtra(self, entry) -> None:
-        # notes on why this gene is in a different orthogroup
-        self.othExtras.append(entry)
-
-    def has_missing(self) -> bool:
-        return len(self.missSyn) > 0
-    
-    def get_missing(self) -> str:
-        # construst the lines for missing genes & their reasons
-        outlines = [''] * len(self.missSyn)
-        para     = "Paralogous - " if (self.isParalog) else ''
-
-        for i in range(len(outlines)):
-            outlines[i] = f"{para}{self.orthoID}: {self.missSyn[i]} Missing - {self.missReas[i]}"
-
-        return '\n'.join(outlines) + '\n'
-
-    def outline(self) -> str:
-        # construct the entry to write to the output
-
-        if (self.resolved):
-            resolved = 'T'
-            if (self.groupCnt > 1):
-                self.status = "Split"
-        else:
-            resolved = 'F'
-
-        if (self.isParalog):
-            paralog = "Paralogous"
-        else:
-            paralog = "Orthologous"
-
-        if (self.isDup):
-            paralog = paralog + "-Duplicate"
-
-        synMissCnt = len(self.missSyn)
-        othMissCnt = len(self.missOther)
-        othMissGes = ','.join(self.missOther)
-        synMissGes = ','.join(self.missSyn)
-        multigrp   = f"{self.MultiGrp} Multi-Grouped"
-        synNotes   = ','.join(self.synExtras)
-        othNotes   = ','.join(self.othExtras)
-
-        outline = f"{self.orthoID}\t{self.status}\t{paralog}\t" + \
-                  f"{multigrp}\t{resolved}\t{self.groupCnt}\t" + \
-                  f"{self.groupIDs}\t{self.othCount}\t{self.synCount}\t" + \
-                  f"{othMissCnt}\t{othMissGes}\t{synMissCnt}\t" + \
-                  f"{synMissGes}\t{othNotes}\t{synNotes}\n"
-
-        return outline
-
 def get_arguments() -> tuple[str, str, str, int]:
     """get the arguments"""
 
@@ -211,26 +137,14 @@ def get_gene_id(column: str) -> str:
 def make_gene_map(gdir: str) -> int:
     """create a mapping of each gene to its chr & index on that chromosome"""
 
-    global geneLocations, synologGenes, otherGenes, multiGrped, paralogs
-
-    #
-    # hold all the genes so we can quantify how many are
-    # in the annotations
-    #
-    annGenes = set()
-    sgenes   = set(synologGenes.keys())
-    ogenes   = set(otherGenes.keys())
+    global genesMap
 
     # get gtf files
     gtfs = get_gtfs(gdir)
 
     for gtf in gtfs:
-        spp = os.path.basename(gtf).split('.')[0]
-        fh  = gzip.open(gtf, "rt") if gtf.endswith(".gz") else open(gtf, 'r')
-        idx = 0 # index
-        cur = None
-        tot = 0
-        tmp = set()
+        fh     = gzip.open(gtf, "rt") if gtf.endswith(".gz") else open(gtf, 'r')
+        chroms = defaultdict(list)
 
         for line in fh:
             if (line[0] == '#'): continue
@@ -239,73 +153,17 @@ def make_gene_map(gdir: str) -> int:
             Chr = fields[0]
             atr = fields[8] # attributes
             gID = get_gene_id(atr)
-            gID = f"{spp}:{gID}"
-            if (cur == None):
-                cur = Chr
-            if (Chr == cur):
-                idx += 1
-            else:
-                idx = 1 # restart to new gene
-                cur = Chr
-            geneLocations[gID] = (Chr, idx)
-            tot += 1
-            tmp.add(gID)
-            annGenes.add(gID)
-
+            pSt = int(fields[3])
+            pEd = int(fields[4])
+            chroms[Chr].append(Gene(gID, Chr, pSt, pEd))
         fh.close()
 
-        # calculate 
-        synGenes = sgenes.intersection(tmp)
-        othGenes = ogenes.intersection(tmp)
-        synCount = len(synGenes)
-        othCount = len(othGenes)
-        synPercn = round(((synCount / tot) * 100), 2)
-        othPercn = round(((othCount / tot) * 100), 2)
-        paraCnt  = len(paralogs.intersection(tmp))
-        mgrpCnt  = len(multiGrped.intersection(tmp))
-        parpercn = round(((paraCnt / tot) * 100), 2)
-        mgppercn = round(((mgrpCnt / tot) * 100), 2)
-        remcnt   = len(othGenes.difference(paralogs))
-        rempercn = round(((remcnt / tot) * 100), 2)
-
-
-        msg = f"\nLoaded {tot} genes from {gtf}\n" + \
-              f"{synCount} ({synPercn}%) found in Synolog\n" + \
-              f"{othCount} ({othPercn}%) found in Other Method where:\n" + \
-              f"\t{paraCnt} ({parpercn}%) are in paralogous groups\n" + \
-              f"\t{remcnt} ({rempercn}%) not in paralogous group\n" + \
-              f"\t{mgrpCnt} ({mgppercn}%) are multi-grouped"
-
-        print(msg)
-
-    sgenes = set(synologGenes.keys())
-    ogenes = set(otherGenes.keys())
-
-    # synolog print
-    n = len(sgenes.difference(annGenes))
-    p = round(((n / len(synologGenes)) * 100), 2)
-    print("\nTotal Number of genes in Synolog not found in annotations:", n, f"({p}%)")
-
-    n = len(annGenes.intersection(sgenes))
-    p = round(((n / len(annGenes)) * 100), 2)
-    print("Total Number of annotation genes grouped by Synolog:", n, f"({p}%)")
-
-    # synolog does not report paralgous groups & is isoform aware
-    print("Total Number of annotation non-multigrouped and non-paralgous genes grouped by Synolog:", n, f"({p}%)")
-
-    # other method print
-    n = len(ogenes.difference(annGenes))
-    p = round(((n / len(otherGenes)) * 100), 2)
-    print("Total Number of genes in Other Method not found in annotations:", n, f"({p}%)")
-
-    n = len(annGenes.intersection(ogenes))
-    p = round(((n / len(annGenes)) * 100), 2)
-    print("Total Number of annotation genes grouped by Other Method:", n, f"({p}%)")
-
-    n = len(annGenes.intersection(otherGenes).difference(paralogs).difference(multiGrped))
-    p = round(((n / len(annGenes)) * 100), 2)
-    print("Total Number of annotation non-multigrouped and non-paralgous genes grouped by Other Method:", n, f"({p}%)")
-
+        for genes in chroms.values():
+            genes.sort(key = lambda g: g.start)
+            for i, gene in enumerate(genes):
+                gene.idx          = i
+                genesMap[gene.id] = gene
+    
     return 0
 
 def predict_reason_for_missing(missG: str, otherMems: set[str], dist: int) -> str:
@@ -353,34 +211,36 @@ def predict_reason_for_missing(missG: str, otherMems: set[str], dist: int) -> st
 def load_synolog(osyn: str) -> int:
     """load the synolog gene into memory"""
 
-    global synologGenes, synologGroups
+    global synologGroups, genesMap
 
-    fh   = gzip.open(osyn, "rt") if osyn.endswith(".gz") else open(osyn, 'r')
-    OG   = None
+    fh = gzip.open(osyn, "rt") if osyn.endswith(".gz") else open(osyn, 'r')
+    OG = None
+    ct = 0
 
     for line in fh:
         if (line[0] == '#'):
             continue
         fields = line.split('\t')
-        gi     = fields[0] # group id
-        spp    = fields[4].split('.')[0]
-        ge     = fields[5]
-        gene   = f"{spp}:{ge}"
+        grpID  = fields[0] # group id
+        gene   = fields[5]
+        if (gene not in genesMap):
+            msg = f"Error: {gene} not found in any gtf files provided"
+            sys.exit(msg)
         if (OG == None):
-            OG  = OrthoGroup(gi)
-        if (gi != OG.id):
+            OG  = OrthoGroup(grpID)
+        if (grpID != OG.id):
             synologGroups.append(OG)
-            OG = OrthoGroup(gi)
+            OG = OrthoGroup(grpID)
         OG.members.add(gene)
-        OG.spp.add(spp)
-        synologGenes[gene].append(OG)
+        genesMap[gene].sotho = len(synologGroups)
+        ct += 1
         
     # add last group
     synologGroups.append(OG)
 
     fh.close()
 
-    msg = f"{len(synologGenes)} genes across {len(synologGroups)} orthogroups loaded " + \
+    msg = f"{ct} genes across {len(synologGroups)} orthogroups loaded " + \
            "from Synolog results\n"
     print(msg)
 
@@ -1443,14 +1303,17 @@ def main() -> int:
     """Compare the orthologs.tsv file to either the orthofinder or orthomcl software"""
 
     # get arguments
-    fltr, omtd, gdir, osyn, dist = get_arguments()
+    rdir, gdir, osyn, dist = get_arguments()
+
+    # create the gene objects
+    make_gene_map(gdir)
 
     # load the orthologs/groups
     load_synolog(osyn)
+
     load_other_method(omtd, fltr)
 
-    # load the gene locations
-    make_gene_map(gdir)
+    
 
     # compare the methods
     compare_orthogroups(dist)
