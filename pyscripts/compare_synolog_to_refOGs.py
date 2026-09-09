@@ -19,6 +19,7 @@ class Gene:
         self.chrom = chrom
         self.idx   = -1
         self.sotho = -1 # synolog orthogroup idx
+        self.sID   = -1 # synolog orthogroup ID
         self.start = min(start, end)
         self.isRef = False
 class OrthoGroup():
@@ -34,7 +35,8 @@ class Comparison:
     split_reason: list of (gene_id, reason) for genes in >1 synolog orthogroup
     extra_mems: set of gene ids present in Synolog's orthogroups but absent in RefOGs (over-merge signal)
     diff_RefOg: set of gene_ids that are in a seperate RefOG than the current one beign compared
-    syngroups: number of synolog orthogroups found represented in the comparison
+    syngroupsIDs: IDs of synolog orthogroups found represented in the comparison
+
     """
 
     def __init__(self):
@@ -43,7 +45,7 @@ class Comparison:
         self.split_reason   = list()
         self.extra_mems     = list()
         self.diffRefOG      = list()
-        self.syngroups      = 0
+        self.syngroupsIDs   = list()
 
     def get_outputlines(self, fname: str, nMems: int) -> list[str]:
         """generate a summary of the comparison"""
@@ -51,7 +53,8 @@ class Comparison:
         # fname == file name for the refOG
         # nMems == number of members in fname
         lines  = list()
-        header = f"{fname} ({nMems}): {self.classification} (# of Synolog Groups: {self.syngroups})\n"
+        synIDs = ", ".join(self.syngroupsIDs)
+        header = f"{fname} ({nMems}): {self.classification} (# of Synolog Groups: {len(self.syngroupsIDs)} [{synIDs}])\n"
         lines.append(header)
 
         missing_genes = defaultdict(list)
@@ -260,6 +263,7 @@ def load_synolog(osyn: str) -> int:
             OG = OrthoGroup(grpID)
         OG.members.add(gene)
         genesMap[gene].sotho = len(synologGroups)
+        genesMap[gene].sID   = grpID
         ct += 1
         
     # add last group
@@ -366,9 +370,15 @@ def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
     synologOGs  = defaultdict(list)
     synologSpp  = defaultdict(list)
     synolog_set = set()
+    synolog_ids = set()
     for gene in grouped:
         synologOGs[gene.sotho].append(gene)
         synologSpp[gene.spp].append(gene)
+        synolog_ids.add(genesMap[gene.id].sID)
+
+    # convert to a list
+    synolog_ids = sorted(list(synolog_ids))
+    comparison.syngroupsIDs.extend(synolog_ids)
 
     # collect all synolog members
     synolog_set = set()
@@ -381,11 +391,9 @@ def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
     if (synolog_set == memSet and missCnt == 0):
         if (len(synologOGs) == 1):
             comparison.classification = equal
-            comparison.syngroups      = 1
             return comparison
         elif (len(synologOGs) > 1):
             comparison.classification = split
-            comparison.syngroups      = len(synologOGs)
             return comparison
 
     # now use the current members for this species
@@ -434,7 +442,6 @@ def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
             comparison.extra_mems.append(gene_id)
 
     # note the number of synolog orthogroups
-    comparison.syngroups = len(synologOGs)
     is_split             = len(synologOGs) > 1
     has_missing          = missCnt > 0
     has_extra            = len(comparison.extra_mems) > 0
