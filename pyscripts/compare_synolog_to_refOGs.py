@@ -230,7 +230,9 @@ def make_gene_map(gdir: str) -> int:
 
         for genes in chroms.values():
             genes.sort(key = lambda g: g.start)
-            for i, gene in enumerate(genes):
+            # gene at idx 1 would be 0 positions from index 0 if 
+            # starting enumaration at 0
+            for i, gene in enumerate(genes, start=1): 
                 gene.idx          = i
                 genesMap[gene.id] = gene
 
