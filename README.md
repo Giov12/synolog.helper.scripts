@@ -13,6 +13,11 @@ Another potential useful script is `ExtractLongestTranscript.py`. Several tools 
 ./ExtractLongestTranscript.py --ann ann.file.gtf.gz --fasta prot.file.fa.gz
 ```
 
+Several of the scripts/analyses I did relied on a *gpMAP* file, which are just two column *.tsv* files with one column being the gene ID, and the second column the protein ID. These were constructed by parsing *GTF* files, with their purpose simply for speeding up parsing out this information in downstream analyses. These can be constructed using `pyscripts/make_gtf_map.py`
+```
+./make_gtf_map.py -g file.gtf.gz
+```
+
 More for the paper, but I wrote several scripts to compare the results of `synolog` to that from [orthofinder3](https://github.com/OrthoFinder/OrthoFinder).
 The first is to convert (i.e., reformat) the isoform IDs to gene IDs, since `synolog` reports gene IDs in its outputs.
 
@@ -37,15 +42,3 @@ Another script that I used for the study is `treeclusters2ALGs.py`, which takes 
 ```
 
 Since Synolog does not know which sequences are actually chromosomes, I manually filtered these results to identify which clusters represented ALGs.
-
-Also, for the orthobench step, since `synolog` reports orthologs using gene IDs instead of isoform/transcript IDs (given that `synolog` uses all available isoforms/transcripts), I wrote a python script to change recode the reference orthogroups used for benchmarking (these, by default use protein IDs). Also, not all protein IDs in these reference orthogroups were found in the gene annotations I used, so I had to search [ENSEMBL](https://www.ensembl.org/) to find gene IDs when possible. I used these as an extra mapping file for recoding.
-
-```
-./recodeRefOGs.py -g ./path/to/gpMaps/ -r ./path/to/RefOGs/ -e extra_gpMap.tsv -o ./outpath/RefOGs.Recoded/
-```
-
-I also modified the [benchmarking script](https://github.com/davidemms/Open_Orthobench/blob/master/BENCHMARKS/benchmark.py) so that it can work at the gene-level instead of protein-level (i,e., adjusted it to the recorded RefOGs). Since I can't simply run the *orthologs.tsv* file from `synolog` through this script, I have another helper script to reformat it
-
-```
-./synolog_to_benchmark.py -o orthologs.tsv # generates benchmarking.orthologs.txt
-```
