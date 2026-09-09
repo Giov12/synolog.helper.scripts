@@ -31,17 +31,79 @@ class Comparison:
     """
     classification: Equal | Superset | Subset | Split | Absent
     missing: list of (gene_id, reason) for RefOG genes not recovered
-    split_detail: list of (gene_id, reason) for genes in >1 synolog orthogroup
-    extra: set of gene ids present in Synolog's orthogroups but absent in RefOGd (over-merge signal)
-    majority_idx : the Synolog orthogroup index containing the most RefOG members (None if nothing was grouped)
+    split_reason: list of (gene_id, reason) for genes in >1 synolog orthogroup
+    extra_mems: set of gene ids present in Synolog's orthogroups but absent in RefOGs (over-merge signal)
+    diff_RefOg: set of gene_ids that are in a seperate RefOG than the current one beign compared
+    syngroups: number of synolog orthogroups found represented in the comparison
     """
 
     def __init__(self):
         self.classification = ''
         self.missing        = list()
         self.split_reason   = list()
-        self.extra_mems     = set()
-        self.majority_idx   = None
+        self.extra_mems     = list()
+        self.diffRefOG      = list()
+        self.syngroups      = 0
+
+    def get_outputlines(self, fname: str) -> list[str]:
+        """generate a summary of the comparison"""
+
+        # fname == file name for the refOG
+        lines  = list()
+        header = f"{fname}: {self.classification} (# of Synolog Groups: {self.syngroups})\n"
+        lines.append(header)
+
+        missing_genes = defaultdict(list)
+        split_genes   = defaultdict(list)
+
+        # bucket the genes by reason
+        for entry in self.missing:
+            gene_id = entry[0]
+            reason  = entry[1]
+            missing_genes[reason].append(gene_id)
+
+        for entry in self.split_reason:
+            gene_id = entry[0]
+            reason  = entry[1]
+            split_genes[reason].append(gene_id)
+
+        # is there missing genes
+        if (len(missing_genes) > 0):
+            parts = list()
+            for reason, geneIDs in missing_genes.items():
+                mems = ','.join(geneIDs)
+                part = f"Missing: {reason} ({len(geneIDs)}): {mems}"
+                parts.append(part)
+            line = '\t' + "; ".join(parts) + '\n'
+            lines.append(line)
+        
+        # if there are split genes (i.e., multiple synolog orthogroups)
+        if (len(split_genes) > 0):
+            parts = list()
+            for reason, geneIDs in split_genes.items():
+                mems = ','.join(geneIDs)
+                part = f"Split: {reason} ({len(geneIDs)}): {mems}"
+                parts.append(part)
+            line = '\t' + "; ".join(parts) + '\n'
+            lines.append(line)
+
+        # if there are genes we added that they did not
+        if (len(self.extra_mems) > 0):
+            mems = ','.join(sorted(self.extra_mems))
+            part = f"Extra ({len(self.extra_mems)}): {mems}"
+            line = '\t' + part + '\n'
+            lines.append(line)
+
+        # if there are genes we added that they did not
+        if (len(self.diffRefOG) > 0):
+            mems = ','.join(sorted(self.diffRefOG))
+            part = f"Misplaced ({len(self.diffRefOG)}): {mems}"
+            line = '\t' + part + '\n'
+            lines.append(line)
+        
+        
+
+        return lines
 
 def get_arguments() -> tuple[str, str, str, int]:
     """get the arguments"""
@@ -52,7 +114,7 @@ def get_arguments() -> tuple[str, str, str, int]:
     parser.add_argument("-r", "--refOGs",  help="path to the directory containing the recoded .txt RefOGs", required=True)
     parser.add_argument("-g", "--gtfs",    help="directory containing gtf files for focal species", required=True)
     parser.add_argument("-s", "--synolog", help="orthologs.tsv file from Synolog",                  required=True)
-    parser.add_argument("-d", "--dist",    help="distance used for sliding window",                 default=100)
+    parser.add_argument("-d", "--dist",    help="distance used for sliding window", type=int,       default=100)
 
     args = parser.parse_args()
     rdir = args.refOGs
@@ -84,11 +146,11 @@ def get_gtfs(gdir: str) -> list[str]:
 
     if (gdir[-1] == '/'):
         gffs = glob.glob(f"{gdir}*.gff.gz")
-        if (len(gtfs) == 0):
+        if (len(gffs) == 0):
             gffs = glob.glob(f"{gdir}*.gff")
     else:
         gffs = glob.glob(f"{gdir}/*.gff.gz")
-        if (len(gtfs) == 0):
+        if (len(gffs) == 0):
             gffs = glob.glob(f"{gdir}/*.gff")
     
     gtfs.extend(gffs)
@@ -169,50 +231,10 @@ def make_gene_map(gdir: str) -> int:
             for i, gene in enumerate(genes):
                 gene.idx          = i
                 genesMap[gene.id] = gene
+
+    print(f"Loaded {len(genesMap)} from {len(gtfs)} annotations")
     
     return 0
-
-def predict_reason_for_missing(missG: str, otherMems: set[str], dist: int) -> str:
-    """try to come up with an explanation on why we are missing this gene for this orthogroup"""
-
-    global geneLocations, synologGenes, otherGenes, multiGrped
-
-    reason = ''
-
-    if (missG not in geneLocations):
-        reason = "Not in annotations"
-    elif (missG in multiGrped):
-        reason = "Multi-Grouped"
-    else:
-        mChr, mIdx = geneLocations[missG] # chr & index of the missing ge
-        spp        = missG.split(':')[0]
-        sppFound   = False # assume spp not in any group
-        sppDifChr  = True # assume different chr
-        rdist      = float("inf") # will minimize dist
-
-        # loop through the members for this other group
-        for otherMem in otherMems:
-            if (otherMem.startswith(spp) == False): 
-                continue
-            sppFound   = True
-            if (otherMem not in geneLocations):
-                continue
-            sChr, sIDX = geneLocations[otherMem]
-
-            if (sChr == mChr):
-                sppDifChr = False
-                rdist = min(rdist, abs(sIDX - mIdx))
-
-        if (sppFound == False):
-            reason = "Species not found"
-        elif (sppDifChr == True):
-            reason = "On a different Chr"
-        elif (rdist > dist):
-            reason = f"Distance exceeds {dist} genes ({mChr} : {rdist} genes away)"
-        else:
-            reason = "Sequence similarity"
-
-    return reason
 
 def load_synolog(osyn: str) -> int:
     """load the synolog gene into memory"""
@@ -278,6 +300,36 @@ def load_refOGs(rdir: str) -> int:
 
     return 0
 
+def get_reason(gene: Gene, synolog_members: list[Gene], dist: int) -> str:
+    """determine why this gene was not grouped into this synolog orthogroup"""
+
+    # reasons
+    no_detection = "No Ortholog Detected"
+    seq_similar  = "Sequence Similarity"
+    diff_chrom   = "Different Chromosome"
+    distance     = "Distance"
+
+    # we just didn't find a reason to add an ortholog
+    # for this species at all
+    if (len(synolog_members) == 0):
+        return no_detection
+
+    chrom_found = False
+    for mem in synolog_members:
+        # shouldn't happen, but just being defensive
+        if (mem.id == gene.id):
+            continue
+        # it could be distance
+        if (mem.chrom == gene.chrom):
+            chrom_found = True
+            gap = abs(mem.idx - gene.idx)
+            if (gap <= dist):
+                return seq_similar
+            
+    if (chrom_found == False):
+        return diff_chrom
+
+    return distance
 
 def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
     """compare a specific refOG to the orthogroups in synolog"""
@@ -295,77 +347,129 @@ def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
     memSet  = set()
     grouped = list() # list of Gene objs
     missAnn = defaultdict(list)
+    missCnt = 0
 
     for gene in memGenes:
         if (gene.spp == ''): # this is a dummy gene object
             comparison.missing.append((gene.id, "Not in Annotation"))
+            missCnt += 1
         elif (gene.sotho == -1):
             missAnn[gene.spp].append(gene)
+            missCnt += 1
         else:
             grouped.append(gene)
-        memSet.add(gene.id)
+            memSet.add(gene.id)
+
+    if(len(grouped) == 0):
+        comparison.classification = absent
+        return comparison
 
     synologOGs  = defaultdict(list)
+    synologSpp  = defaultdict(list)
     synolog_set = set()
     for gene in grouped:
         synologOGs[gene.sotho].append(gene)
-        synolog_set.add(gene.id)
+        synologSpp[gene.spp].append(gene)
 
-    if (synolog_set == memSet and len(missAnn) == 0 and len(comparison.missing) == 0):
-        comparison.classification = equal
-        comparison.majority_idx   = list(synologOGs.keys())[0]
-        return comparison
+    # collect all synolog members
+    synolog_set = set()
+    for idx in synologOGs.keys():
+        synolog_set.update(synologGroups[idx].members)
 
-    # find out which synolog orthogroup has most of the members
-    majority = -1
-    best     = 0
-    for idx, syn_mems in synologOGs.items():
-        if (best < len(syn_mems)):
-            majority = idx
-    majority_members = synologOGs[majority]
-    majority_ids     = set()
-    for gene in majority_ids:
-        set.add(gene.id)
+    # if all of the refOG members are within the collected
+    # synolog orthogroups & there are no extra members
+    # between the two
+    if (synolog_set == memSet and missCnt == 0):
+        if (len(synologOGs) == 1):
+            comparison.classification = equal
+            comparison.syngroups      = 1
+            return comparison
+        elif (len(synologOGs) > 1):
+            comparison.classification = split
+            comparison.syngroups      = len(synologOGs)
+            return comparison
 
-    majority_syn_group = synologGroups[majority].members
-    extra = majority_syn_group.difference(memSet)
+    # now use the current members for this species
+    # to see if this is due to synteny (i.e., distance)
+    # or sequence similarity
+    for spp, ungrouped in missAnn.items():
+        grouped_spp = synologSpp.get(spp, list())
+        for gene in ungrouped:
+            reason = get_reason(gene, grouped_spp, dist)
+            comparison.missing.append((gene.id, reason))
 
-    split_detail = list()
-    if (len(synologOGs) > 1):
-        # build species -> Gene lookup within the majority group, for distance checks
-        majority_by_species = defaultdict(list)
-        for gene in majority_members:
-            majority_by_species[gene.spp].append(gene)
+    # now to identify why the refOG is split across multiple
+    # synolog orthogroups
+    spp_by_synOG = defaultdict(lambda : defaultdict(list))
+    for gene in grouped:
+        spp_by_synOG[gene.spp][gene.sotho].append(gene)
 
-        for idx, members in synologOGs.items():
-            if idx == majority:
+    for spp, sppGrp in spp_by_synOG.items():
+        if (len(sppGrp) < 2):
+            continue # only one orthogroup with this spp
+
+        # figure out which synolog orthogroup
+        # has the most members 
+        majority = -1
+        best     = 0
+        for sotho, mems in sppGrp.items():
+            if (best < len(mems)):
+                majority = sotho
+                best     = len(mems)
+
+        majorityMems = sppGrp[majority]
+        for sotho, mems in sppGrp.items():
+            if (sotho == majority):
                 continue
-            for gid, gene in members:
-                ref_gene = majority_by_species.get(gene.spp)
-                if ref_gene is None:
-                    # majority group has no representative of this species at all
-                    split_detail.append((gid, "Foreign Group"))
-                    continue
-                if ref_gene.chrom != gene.chrom:
-                    split_detail.append((gid, "Different Chromosome"))
-                    continue
-                gap = abs(ref_gene.idx - gene.idx)
-                if gap <= dist:
-                    split_detail.append((gid, "Sequence Similarity"))
-                else:
-                    split_detail.append((gid, "Distance"))
+            for gene in mems:
+                reason = get_reason(gene, majorityMems, dist)
+                comparison.split_reason.append((gene.id, reason))
 
-    # classify
-    if (len(synologOGs) > 1):
-        classification = split
-    elif (len(missing) > 0):
-        classification = subset
-    elif (len(extra) > 0):
-        classification = subset
+    # get the over-merged members
+    extra_genes = synolog_set.difference(memSet)
+
+    for gene_id in extra_genes:
+        if (genesMap[gene_id].isRef):
+            comparison.diffRefOG.append(gene_id)
+        else:
+            comparison.extra_mems.append(gene_id)
+
+    # note the number of synolog orthogroups
+    comparison.syngroups = len(synologOGs)
+    is_split             = len(synologOGs) > 1
+    has_missing          = missCnt > 0
+    has_extra            = len(comparison.extra_mems) > 0
+
+    # now add the classification
+    split_sub_sup = f"{split}+{subset}+{superset}"
+    split_sub     = f"{split}+{subset}"
+    split_sup     = f"{split}+{superset}"
+    sub_sup       = f"{subset}+{superset}"
+    
+    if (is_split and has_missing and has_extra):
+        # messies of all cases
+        comparison.classification = split_sub_sup
+    elif (is_split and has_missing):
+        # we are split and missing some members
+        comparison.classification = split_sub
+    elif (is_split and has_extra):
+        # we are split and have additional members
+        comparison.classification = split_sup
+    elif (is_split):
+        # we are completely split
+        comparison.classification = split
+    elif (has_missing and has_extra):
+        # single orthogroup with possibly messy assignments
+        comparison.classification = sub_sup
+    elif (has_missing):
+        # we are missing some members from this single group
+        comparison.classification = subset
+    elif (has_extra):
+        # single group with extra members
+        comparison.classification = superset
     else:
-        classification = subset
-
-    comparison.classification = classification
+        # these two orthogroups are equal
+        comparison.classification = equal
 
     return comparison
 
@@ -374,35 +478,36 @@ def process_refOGs(dist: int) -> int:
 
     global genesMap, refOGs
 
-    fh = open("refOG.discrepancies.txt", 'w')
-
-    # discrepancies
-    discreps   = list()
-    totReasons = defaultdict(int)
+    fh       = open("refOG.discrepancies.txt", 'w')
+    classMap = defaultdict(int)
 
     for entry in refOGs:
         fname      = entry[0]
         refMems    = entry[1]
         memGenes   = list()
-        synologIds = set()
         for mem in refMems:
             gene = genesMap.get(mem, None)
             if (gene == None):
-                sidx = -1 # make a dummy gene
                 gene = Gene('', mem, '', -1, -1)
-            else:
-                sidx = gene.sotho
             memGenes.append(gene)
-            if (sidx != -1):
-                synologIds.add(sidx)
-        if (len(synologIds) == 0):
-            outline = f"{fname}: Completely missing\n"
-            fh.write(outline)
-            totReasons["Completely missing"] += 1
-            continue
+        # do the comparison & construct a summary of the comparison
         comparison = compare_to_refOG(memGenes, dist)
-        
+        outlines   = comparison.get_outputlines(fname)
+        # write the summary
+        for line in outlines:
+            fh.write(line)
+        classMap[comparison.classification] += 1
+
     fh.close()
+
+    # print the overall findings
+    total = len(refOGs)
+    for classification, class_count in classMap.items():
+        if (class_count > 0):
+            percent = round((class_count / total) * 100, 2)
+        else:
+            percent = 0
+        print(f"{class_count} {classification} classifications ({percent}%) across {total} RefOGs")
 
     return 0
   
