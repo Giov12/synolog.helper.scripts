@@ -45,12 +45,13 @@ class Comparison:
         self.diffRefOG      = list()
         self.syngroups      = 0
 
-    def get_outputlines(self, fname: str) -> list[str]:
+    def get_outputlines(self, fname: str, nMems: int) -> list[str]:
         """generate a summary of the comparison"""
 
         # fname == file name for the refOG
+        # nMems == number of members in fname
         lines  = list()
-        header = f"{fname}: {self.classification} (# of Synolog Groups: {self.syngroups})\n"
+        header = f"{fname} ({nMems}): {self.classification} (# of Synolog Groups: {self.syngroups})\n"
         lines.append(header)
 
         missing_genes = defaultdict(list)
@@ -101,8 +102,6 @@ class Comparison:
             line = '\t' + part + '\n'
             lines.append(line)
         
-        
-
         return lines
 
 def get_arguments() -> tuple[str, str, str, int]:
@@ -492,7 +491,7 @@ def process_refOGs(dist: int) -> int:
             memGenes.append(gene)
         # do the comparison & construct a summary of the comparison
         comparison = compare_to_refOG(memGenes, dist)
-        outlines   = comparison.get_outputlines(fname)
+        outlines   = comparison.get_outputlines(fname, len(refMems))
         # write the summary
         for line in outlines:
             fh.write(line)
