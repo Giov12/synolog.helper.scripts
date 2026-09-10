@@ -380,6 +380,8 @@ def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
 
     if(len(grouped) == 0):
         comparison.classification = absent
+        for gene in memGenes:
+            comparison.missing.append((gene.id, "No Ortholog Detected"))
         return comparison
 
     synologOGs  = defaultdict(list)
