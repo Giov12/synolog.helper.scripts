@@ -7,10 +7,13 @@ import glob
 import sys
 from   collections import defaultdict
 
+# global variables
 genesMap      = dict()
 synologGroups = list()
 synologOGs    = list() # list of orthogroups from synolog
 refOGs        = list() # list of tuples of (str, list) where str == file name, list == gene IDs
+notInSynolog  = set()
+synologUniq   = set()
 
 class Gene:
     def __init__(self, spp: str, id_: str, chrom: str, start: int, end: int):
@@ -289,6 +292,9 @@ def load_refOGs(rdir: str) -> int:
         msg = f"No *.txt files found in {rdir}"
         sys.exit(msg)
 
+    # orthobench data has a duplicated entry: FBpp0309618 / FBgn0003048
+    all_genes = set()
+
     for refog_file in refog_files:
         fh = open(refog_file, 'r')
         og = list()
@@ -298,10 +304,14 @@ def load_refOGs(rdir: str) -> int:
                 continue
             mem = line.strip()
             og.append(mem)
+            all_genes.add(mem)
+
             if (mem in genesMap):
                 genesMap[mem].isRef = True
         fh.close()
         refOGs.append((bn, og))
+
+    print(f"Total number of genes across {len(refOGs)} RefOGs: {len(all_genes)}")
 
     return 0
 
@@ -338,7 +348,8 @@ def get_reason(gene: Gene, synolog_members: list[Gene], dist: int) -> str:
 
 def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
     """compare a specific refOG to the orthogroups in synolog"""
-    global genesMap, synologGroups
+
+    global genesMap, synologGroups, notInSynolog, synologUniq
 
     comparison = Comparison()
 
@@ -358,9 +369,11 @@ def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
         if (gene.spp == ''): # this is a dummy gene object
             comparison.missing.append((gene.id, "Not in Annotation"))
             missCnt += 1
+            notInSynolog.add(gene.id)
         elif (gene.sotho == -1):
             missAnn[gene.spp].append(gene)
             missCnt += 1
+            notInSynolog.add(gene.id)
         else:
             grouped.append(gene)
             memSet.add(gene.id)
@@ -442,6 +455,7 @@ def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
             comparison.diffRefOG.append(gene_id)
         else:
             comparison.extra_mems.append(gene_id)
+            synologUniq.add(gene_id)
 
     # note the number of synolog orthogroups
     is_split             = len(synologOGs) > 1
@@ -507,6 +521,10 @@ def process_refOGs(dist: int) -> int:
         classMap[comparison.classification] += 1
 
     fh.close()
+
+    global synologUniq, notInSynolog
+    print(f"Undetected number of genes from RefOGs: {len(notInSynolog)}")
+    print(f"Number of introduced genes from Synolog not found in RefOGs: {len(synologUniq)}\n")
 
     # print the overall findings
     total = len(refOGs)
