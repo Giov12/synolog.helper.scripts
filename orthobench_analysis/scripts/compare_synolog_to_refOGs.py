@@ -460,9 +460,9 @@ def compare_to_refOG(memGenes: list[Gene], dist: int) -> Comparison:
             synologUniq.add(gene_id)
 
     # note the number of synolog orthogroups
-    is_split             = len(synologOGs) > 1
-    has_missing          = missCnt > 0
-    has_extra            = len(comparison.extra_mems) > 0
+    is_split    = len(synologOGs) > 1
+    has_missing = missCnt > 0
+    has_extra   = len(comparison.extra_mems) > 0
 
     # now add the classification
     split_sub_sup = f"{split}+{subset}+{superset}"
@@ -506,9 +506,9 @@ def process_refOGs(dist: int) -> int:
     classMap = defaultdict(int)
 
     for entry in refOGs:
-        fname      = entry[0]
-        refMems    = entry[1]
-        memGenes   = list()
+        fname    = entry[0]
+        refMems  = entry[1]
+        memGenes = list()
         for mem in refMems:
             gene = genesMap.get(mem, None)
             if (gene == None):
