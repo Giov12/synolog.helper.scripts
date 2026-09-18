@@ -169,10 +169,10 @@ help(){
     //
     // help message
     //
-    cerr << "./filter_og2_genes \n"
-         << "-s species_list [single column list of species IDs]\n"
-         << "-g og_list [single column list of OG to select]\n"
-         << "-o [odb12v2_OG2genes.tab.gz file]\n";
+    cerr << "./filter_og2_genes\n"
+         << "-s\t\tspecies_list [single column list of species IDs]\n"
+         << "-g\t\tog_list [single column list of OG to select]\n"
+         << "-o\t\t[odb12v2_OG2genes.tab.gz file]\n";
     exit(0);
 
 }
@@ -197,6 +197,10 @@ main(int argc, char *args[]){
         else if (arg == "-h"){
             help();
         }
+    }
+
+    if (og_file.empty() && spp_file.empty() && og2genes_file.empty()){
+        help();
     }
 
     if (og_file.size() == 0 || !file_exists(og_file)){
