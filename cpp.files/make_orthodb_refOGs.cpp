@@ -7,10 +7,13 @@
 #include <zlib.h>
 
 using std::string;
+using std::fstream;
 using std::unordered_map;
 using std::vector;
 using std::cerr;
 using std::cout;
+
+typedef unsigned int uint;
 
 //
 // prioritize to ensembl
@@ -19,6 +22,11 @@ using std::cout;
 struct GeneInfo {
     string ensembl;
     string uniprot;
+};
+
+struct SppNames {
+    string orthdb_id;
+    string new_id;
 };
 
 bool
@@ -47,6 +55,48 @@ parse_tabular(string &line, vector<string> &parts){
     return 0;
 }
 
+int
+create_spp_map(const string &infile, vector<SppNames> &spp_names){
+    //
+    // this will create a mapping for
+    // orthoDB species ID -> new org ID
+    //
+
+    if (infile.empty()){
+        return 1; // nothing to do here
+    }
+
+    fstream fh(infile);
+
+    if (!fh.is_open()){
+        cerr << "Error: Unable to open " << infile << '\n';
+        exit(1);
+    }
+
+    string line;
+    while (std::getline(fh, line)){
+        if (line.empty() || line[0] == '#'){
+            continue;
+        }
+        if (line.back() == '\n'){
+            line.pop_back();
+        }
+
+        SppNames sn;
+
+        size_t idx = line.find('\t');
+        if (idx == string::npos){
+            continue;
+        }
+        sn.orthdb_id = line.substr(0, idx);
+        sn.new_id    = line.substr(idx + 1);
+        spp_names.push_back(sn);
+    }
+
+    fh.close();
+
+    return 0;
+}
 string
 strip_version(const string &ensembl_field){
     
@@ -63,6 +113,33 @@ strip_version(const string &ensembl_field){
     size_t jdx = first.find('.');
 
     return (jdx == string::npos) ? first : first.substr(0, jdx);
+}
+
+string
+get_gzline(gzFile fh, bool &eof){
+    //
+    // construct a string that reaches the '\n' character
+    //
+    string line;
+    const int buff_size = 8192;
+    char buffer[buff_size];
+    bool chars_read = false; // were characters read
+
+    while (true){
+        char *read_chars = gzgets(fh, buffer, buff_size);
+
+        if (read_chars == NULL){
+            break; // reach the end of the file stream
+        }
+        chars_read = true;
+        line      += buffer;
+        if (!line.empty() && line.back() == '\n'){
+            break;
+        }
+    }
+
+    eof = !chars_read; // will be true if no characters read
+    return line;
 }
 
 int 
@@ -85,13 +162,18 @@ load_genes(const string &genes_file, unordered_map<string, GeneInfo> &gene_map){
     const int buff_size = 8192;
     char buffer[buff_size];
     vector<string> parts;
+    string line;
+    bool   eof;
     long count = 0;
 
-    while (gzgets(fh, buffer, buff_size) != NULL){
-        string line(buffer);
+    while (true){
+        line = get_gzline(fh, eof);
+        if (eof){
+            break; // reach the end of the line
+        }
         
-        // strip \n character
-        if (!line.empty() && line.back() == '\n') {
+        // strip new line characters
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')){
             line.pop_back();
         }
 
@@ -122,15 +204,20 @@ load_genes(const string &genes_file, unordered_map<string, GeneInfo> &gene_map){
     return 0;
 }
 
-void join_and_write(const string &og2genes_file, const string &outname,
-                     unordered_map<string, GeneInfo> &gene_map){
+int
+join_and_write(const string &og2genes_file, const string &outname,
+            unordered_map<string, GeneInfo> &gene_map, vector<SppNames> &spp_names){
+
+    //
+    // create a single tsv file with all the orthogroups but use
+    // ensembl or uniprot id's instead of orthodb ids
+    //
 
     gzFile fh = gzopen(og2genes_file.c_str(), "rb");
     if (fh == NULL){
         cerr << "Error: could not open " << og2genes_file << '\n';
         exit(1);
     }
-    gzbuffer(fh, 1 << 20);
 
     gzFile ofh = gzopen(outname.c_str(), "wb");
     if (ofh == NULL){
@@ -138,36 +225,70 @@ void join_and_write(const string &og2genes_file, const string &outname,
         exit(1);
     }
 
-    gzprintf(ofh, "Orthogroup\tGeneID\tSpecies\n");
+    gzprintf(ofh, "#Orthogroup\tGeneID\tSpecies\n");
 
     const int buff_size = 8192;
     char buffer[buff_size];
     vector<string> parts;
-    long written = 0, missing = 0;
+    string line;
+    bool   eof;
 
-    while (gzgets(fh, buffer, buff_size) != NULL){
-        string line(buffer);
-        if (!line.empty() && line.back() == '\n') line.pop_back();
-        if (line.empty()) continue;
+    //
+    // several counters
+    // number of elements/genes written & number of
+    // genes not found in the map & number of genes
+    // that lack a usable ID
+    //
 
-        split_tab(line, parts);
-        const string &og_id = parts[0];
-        const string &orthodb_gene_id = parts[1];
+    long written = 0, not_in_map = 0, no_gene_id = 0;
 
-        size_t colon = orthodb_gene_id.find(':');
-        string species_id = orthodb_gene_id.substr(0, colon);
+    while (true){
+        line = get_gzline(fh, eof);
+
+        if (eof){
+            break;
+        }
+
+        // remove last line character
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')){
+            line.pop_back();
+        }
+
+        if (line.empty()){
+            continue;
+        }
+        parts.clear();
+        parse_tabular(line, parts);
+
+        const string &og_id           = parts[0]; // orthogroup ID
+        const string &orthodb_gene_id = parts[1]; // orthoDB gene ID
+
+        size_t idx = orthodb_gene_id.find(':');
+        string species_id = orthodb_gene_id.substr(0, idx);
+
+        // check if we need to update the name
+        for (uint i = 0; i < spp_names.size(); i++){
+            if (species_id == spp_names[i].orthdb_id){
+                species_id = spp_names[i].new_id;
+                break;
+            }
+        }
 
         auto it = gene_map.find(orthodb_gene_id);
+        // is this gene ID in our mapping
         if (it == gene_map.end()){
-            missing++;
+            not_in_map++;
             continue;
         }
 
         // prefer Ensembl gene id; fall back to UniProt if Ensembl is empty
         const string &gene_id = it->second.ensembl.empty() ? it->second.uniprot : it->second.ensembl;
 
+        //
+        // this gene won't be trackable
+        //
         if (gene_id.empty()){
-            missing++;
+            no_gene_id++;
             continue;
         }
 
@@ -178,23 +299,29 @@ void join_and_write(const string &og2genes_file, const string &outname,
     gzclose(fh);
     gzclose(ofh);
 
-    cerr << "Wrote " << written << " records, " << missing << " skipped (no gene id found)\n";
+    cerr << "Wrote " << written << " records\n";
+    cerr << not_in_map << " not found in gene map (possible species-list mismatch)\n";
+    cerr << no_gene_id << " found but had no Ensembl/UniProt id\n";
+
+    return 0;
 }
 
 void
 help(){
-    cerr << "Usage: ./make_orthodb_refOGs -G filtered.odb12v2_OG2genes.tab.gz -g filtered.odb12v2_genes.tab.gz\n";
+    cerr << "Usage: ./make_orthodb_refOGs -G filtered.odb12v2_OG2genes.tab.gz -g filtered.odb12v2_genes.tab.gz "
+         << "-o output.tsv.gz [optional] -s spp_map.tsv [optional]\n";
     exit(1);
 }
 
 int main(int argc, char *argv[]){
 
-    string og2genes_file, genes_file, outname;
+    string og2genes_file, genes_file, outname, spp_map_file;
     
     // expect at least 2 inputs
     if (argc < 3){
         help();
     }
+
     for (int i = 1; i < argc; i++){
         string arg = argv[i];
         if (arg == "-G" && i + 1 < argc){
@@ -205,6 +332,9 @@ int main(int argc, char *argv[]){
         }
         else if (arg == "-o" && i + 1 < argc){
             outname = string(argv[i + 1]);
+        }
+        else if (arg == "-s" && i + 1 < argc){
+            spp_map_file = string(argv[i + 1]);
         }
         else if (arg == "-h"){
             help();
@@ -222,7 +352,19 @@ int main(int argc, char *argv[]){
     // populate the gene map
     unordered_map<string, GeneInfo> gene_map;
     load_genes(genes_file, gene_map);
-    join_and_write(og2genes_file, outname, gene_map);
+
+    // collect any species ID mappings
+    vector<SppNames> spp_names;
+    create_spp_map(spp_map_file, spp_names);
+
+    //
+    // create an output name if needed
+    //
+    if (outname.empty()){
+        outname = "OrthoDB.RefOGs.tsv.gz";
+    }
+
+    join_and_write(og2genes_file, outname, gene_map, spp_names);
 
     return 0;
 }
