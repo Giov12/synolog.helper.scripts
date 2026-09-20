@@ -16,8 +16,9 @@ using std::cout;
 typedef unsigned int uint;
 
 //
-// prioritize to ensembl
-// & fallback to uniprot
+// hols different identifiers
+// for a specific gene including ensembl
+// protein, uniprot, and gene_id
 //
 struct GeneInfo {
     string ensembl;
@@ -205,11 +206,7 @@ load_genes(const string &genes_file, unordered_map<string, GeneInfo> &gene_map){
         exit(1);
     }
 
-    //
-    // buffer & vector to store fields
-    //
-    const int buff_size = 8192;
-    char buffer[buff_size];
+    // objects used for parsing
     vector<string> parts;
     string line;
     bool   eof;
@@ -282,7 +279,7 @@ join_and_write(const string &og2genes_file, const string &outname,
         exit(1);
     }
 
-    gzprintf(ofh, "#Orthogroup\tGeneID\tSpecies\n");
+    gzprintf(ofh, "#Orthogroup\tGeneID\tSpecies\tSource(s)\n");
 
     const int buff_size = 8192;
     char buffer[buff_size];
@@ -340,22 +337,22 @@ join_and_write(const string &og2genes_file, const string &outname,
 
         // down the priority change
         string gene_id, id_source;
-        const GeneInfo &info = it->second;     
-        if (!info.ensembl.empty()){
-            gene_id   = info.ensembl;
-            id_source = "ensembl";
+        const GeneInfo &info = it->second;
+        if (!info.gene_id.empty()){
+            gene_id   = info.gene_id;
+            id_source = "geneid";
+        }
+        if (!info.protein_id.empty()){
+            gene_id   += ',' + info.protein_id;
+            id_source += ",protein_id";
+        }
+        else if (!info.ensembl.empty()){
+            gene_id   += ',' + info.ensembl;
+            id_source += ",ensembl";
         }
         else if (!info.uniprot.empty()){
-            gene_id   = info.uniprot;
-            id_source = "uniprot";
-        }
-        else if (!info.protein_id.empty()){
-            gene_id   = info.protein_id;
-            id_source = "protein_id";
-        }
-        else if (!info.gene_id.empty()){
-            gene_id   = info.protein_id;
-            id_source = "geneid";
+            gene_id   += ',' + info.uniprot;
+            id_source += ",uniprot";
         }
         //
         // this gene won't be trackable
@@ -364,6 +361,11 @@ join_and_write(const string &og2genes_file, const string &outname,
             gzprintf(ofh2, "%s\t%s\t%s\n", og_id.c_str(), orthodb_gene_id.c_str(), species_id.c_str());
             no_gene_id++;
             continue;
+        }
+
+        if (gene_id[0] == ','){
+            gene_id   = gene_id.substr(1); // no GeneID was found
+            id_source = id_source.substr(1);
         }
 
         gzprintf(ofh, "%s\t%s\t%s\t%s\n", og_id.c_str(), gene_id.c_str(), species_id.c_str(), id_source.c_str());
