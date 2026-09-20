@@ -22,6 +22,8 @@ typedef unsigned int uint;
 struct GeneInfo {
     string ensembl;
     string uniprot;
+    string protein_id;
+    string gene_id;
 };
 
 struct SppNames {
@@ -142,6 +144,53 @@ get_gzline(gzFile fh, bool &eof){
     return line;
 }
 
+string
+extract_geneid(const string &synomoms){
+    //
+    // helper function to grab the gene ids from the 4th column of
+    // odb12v2_genes.tab.gz
+    //
+
+    if (synomoms.empty()){
+        return "";
+    }
+
+    size_t start = 0, next = string::npos, length = synomoms.size();
+    string part;
+
+    // GeneID is completely full of digits. Need to check if this the ID
+    bool all_digits;
+
+    // iterate over a ';' delimited string
+    while (start <= length){
+        next = synomoms.find(';', start);
+        part = next == string::npos ? synomoms.substr(start) : synomoms.substr(start, next - start);
+        
+        // assume true unless proven wrong
+        all_digits = !part.empty();
+        if (all_digits){
+            for (uint i = 0; i < part.size(); i++){
+                if (!isdigit((unsigned char)part[i])){
+                    all_digits = false;
+                    break;
+                }
+            }
+        }
+        // we found it
+        if (all_digits){
+            return part;
+        }
+        // if not, exit if we reached the end
+        if (next == string::npos){
+            break;
+        }
+
+        start = next + 1;
+    }
+
+    return "";
+}
+
 int 
 load_genes(const string &genes_file, unordered_map<string, GeneInfo> &gene_map){
 
@@ -192,10 +241,12 @@ load_genes(const string &genes_file, unordered_map<string, GeneInfo> &gene_map){
 
 
         const string &orthodb_id = parts[0];
+        const string &protein_id = parts[2];
+        const string &synonyms   = parts[3];
         const string &uniprot    = parts[4];
         const string &ensembl    = parts[5];
 
-        gene_map[orthodb_id] = { strip_version(ensembl), uniprot };
+        gene_map[orthodb_id] = { strip_version(ensembl), uniprot, protein_id, extract_geneid(synonyms)};
         count++;
     }
     gzclose(fh);
@@ -221,6 +272,12 @@ join_and_write(const string &og2genes_file, const string &outname,
 
     gzFile ofh = gzopen(outname.c_str(), "wb");
     if (ofh == NULL){
+        cerr << "Error: could not open " << outname << '\n';
+        exit(1);
+    }
+
+    gzFile ofh2 = gzopen("missing_ids.tsv.gz", "wb");
+    if (ofh2 == NULL){
         cerr << "Error: could not open " << outname << '\n';
         exit(1);
     }
@@ -281,23 +338,41 @@ join_and_write(const string &og2genes_file, const string &outname,
             continue;
         }
 
-        // prefer Ensembl gene id; fall back to UniProt if Ensembl is empty
-        const string &gene_id = it->second.ensembl.empty() ? it->second.uniprot : it->second.ensembl;
-
+        // down the priority change
+        string gene_id, id_source;
+        const GeneInfo &info = it->second;     
+        if (!info.ensembl.empty()){
+            gene_id   = info.ensembl;
+            id_source = "ensembl";
+        }
+        else if (!info.uniprot.empty()){
+            gene_id   = info.uniprot;
+            id_source = "uniprot";
+        }
+        else if (!info.protein_id.empty()){
+            gene_id   = info.protein_id;
+            id_source = "protein_id";
+        }
+        else if (!info.gene_id.empty()){
+            gene_id   = info.protein_id;
+            id_source = "geneid";
+        }
         //
         // this gene won't be trackable
         //
         if (gene_id.empty()){
+            gzprintf(ofh2, "%s\t%s\t%s\n", og_id.c_str(), orthodb_gene_id.c_str(), species_id.c_str());
             no_gene_id++;
             continue;
         }
 
-        gzprintf(ofh, "%s\t%s\t%s\n", og_id.c_str(), gene_id.c_str(), species_id.c_str());
+        gzprintf(ofh, "%s\t%s\t%s\t%s\n", og_id.c_str(), gene_id.c_str(), species_id.c_str(), id_source.c_str());
         written++;
     }
 
     gzclose(fh);
     gzclose(ofh);
+    gzclose(ofh2);
 
     cerr << "Wrote " << written << " records\n";
     cerr << not_in_map << " not found in gene map (possible species-list mismatch)\n";
