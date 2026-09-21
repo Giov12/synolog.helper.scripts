@@ -503,7 +503,7 @@ rename_orthologs(const string &orthogroups_file){
 
 void
 help(){
-    cerr << "Usage: ./find_ensemble_ids -o orthodb_orthogroups.tsv.gz -a /path/to/gtf_annotations/\n";
+    cerr << "Usage: ./rename_odb_genes -o orthodb_orthogroups.tsv.gz -a /path/to/gtf_annotations/\n";
     exit(1);
 }
 

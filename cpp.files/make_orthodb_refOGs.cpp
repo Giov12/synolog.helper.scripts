@@ -16,7 +16,7 @@ using std::cout;
 typedef unsigned int uint;
 
 //
-// hols different identifiers
+// holds different identifiers
 // for a specific gene including ensembl
 // protein, uniprot, and gene_id
 //
