@@ -37,11 +37,14 @@ synolog_file  = ''
 tot_tp        = 0
 tot_fp        = 0
 tot_fn        = 0
+misplaced_cnt = 0 # misplaced synolog genes
+checked_cnt   = 0 # how many misplaced genes we checked
 pairsSkipODB  = 0 # pairs skipped if not in orthodb
 pairsSkipSyn  = 0 # pairs skipped if not in synolog
 gene_indices  = defaultdict(Index)
 pair_stats    = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
 discrepancies = list()
+misplaced     = list()
 
 def get_arguments() -> int:
     """get the arguments"""
@@ -128,7 +131,7 @@ def load_synolog() -> int:
         if (len(line) == 0 or line[0] == '#'):
             continue
         fields = line.split('\t')
-        assert len(fields) == 12, f"Malformed line encountered in {synolog_file}:\n{line}" 
+        assert len(fields) in [12, 10], f"Malformed line encountered in {synolog_file}:\n{line}" 
         tot  += 1
         grpID = fields[0]
         spp   = fields[4].lower()
@@ -151,8 +154,6 @@ def load_synolog() -> int:
     
     # add the last group
     synolog_grps.append(grp)
-
-    print() # separate message from load_orthodb()
     msg = f"Synolog: {tot} orthologs were loaded into {len(synolog_grps)} orthogroups"
     
     print(msg)
@@ -183,7 +184,7 @@ def compute_discrepancies() -> int:
         odb_idx_cnts = defaultdict(int)
 
         # count the frequency of each orthogroup from orthoDB
-        for mem in grp:
+        for mem in sorted(grp):
             odb_idx = gene_indices[mem].orthodb_idx
             if (odb_idx == -1):
                 continue
@@ -304,13 +305,42 @@ def calc_prec() -> int:
 
     return 0
 
+def calc_misplaced() -> int:
+    """count every synolog gene that orthodb does not believe fits its orthogroup"""
+
+    #
+    # the premise behind this function is that if a single
+    # synolog gene is within an orthoDB orthogroup, the
+    # pairwise comparisons will flag it as N-1 FP hits
+    # which skews the statistics
+    #
+
+    global misplaced_cnt, checked_cnt, misplaced, \
+           gene_indices, discrepancies, synolog_grps
+
+    for syn_idx, grp in enumerate(synolog_grps):
+        discp = discrepancies[syn_idx]
+
+        if (discp.main_idx == -1):
+            continue # no orthodb group was linked
+
+        for mem in sorted(grp):
+            odb_idx = gene_indices[mem].orthodb_idx
+            if (odb_idx == -1):
+                continue # not in orthodb
+            checked_cnt += 1
+            if (odb_idx != discp.main_idx):
+                misplaced_cnt += 1
+                misplaced.append((mem, syn_idx, odb_idx, discp.main_idx))
+    return 0
+
 def summarize() -> int:
     """print the results of the comparisons"""
 
     global tot_tp, tot_fp, tot_fn, pair_stats, \
-           pairsSkipODB, pairsSkipSyn
+           pairsSkipODB, pairsSkipSyn, misplaced_cnt, \
+           checked_cnt
 
-    
     # calculate precision as TP / (TP + FP)
     pSum = (tot_tp + tot_fp)
     if (pSum == 0):
@@ -336,7 +366,15 @@ def summarize() -> int:
     print(f"\nGlobal: TP={tot_tp} FP={tot_fp} FN={tot_fn}")
     print(f"Global: precision={precision:.4f} recall={recall:.4f} f1={f1:.4f}")
     print(f"Skipped (gene not in orthodb reference): {pairsSkipODB}")
-    print(f"Skipped (gene not in synolog output):    {pairsSkipSyn}\n")
+    print(f"Skipped (gene not in synolog output):    {pairsSkipSyn}")
+
+    if (checked_cnt == 0):
+        gene_precision = 0.0
+    else:
+        gene_precision = 1 - (misplaced_cnt / checked_cnt)
+
+    print(f"\nGene-level placement: {checked_cnt} genes checked,", 
+          f"{misplaced_cnt} misplaced ({gene_precision:.4f} agreement rate)\n")
 
     # print species view of things
     print(f"{'Species A':<10}{'Species B':<10}{'TP':>8}{'FP':>8}{'FN':>8}{'Precision':>12}{'Recall':>10}")
@@ -370,6 +408,9 @@ def main() -> int:
     # calculate precision & recall
     calc_prec()
     calc_recall()
+
+    # ensure we count penalities only once
+    calc_misplaced()
 
     # summarize
     summarize()
