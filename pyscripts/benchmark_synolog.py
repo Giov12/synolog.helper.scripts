@@ -7,11 +7,12 @@ from collections import defaultdict
 from itertools import combinations
 
 class Index:
-    __slots__ = ("synolog_idx", "orthodb_idx")
+    __slots__ = ("synolog_idx", "orthodb_idx", "synolog_grp")
 
     def __init__(self) -> None:
         self.synolog_idx = -1 # default value
         self.orthodb_idx = -1
+        self.synolog_grp = -1 # goup ID
 
 class Discrepancy:
     #
@@ -148,6 +149,7 @@ def load_synolog() -> int:
             cur = grpID
             grp = set()
         gene_indices[mem].synolog_idx = len(synolog_grps)
+        gene_indices[mem].synolog_grp = int(grpID)
         grp.add(mem)
     
     fh.close()
@@ -266,6 +268,8 @@ def calc_prec() -> int:
     global tot_tp, tot_fp, pairsSkipODB, gene_indices, \
            synolog_grps, pair_stats, discrepancies
 
+    ofh = open("false_positives.tsv", 'w')
+
     for syn_idx, grp in enumerate(synolog_grps):
         members = sorted(grp) # ensure deterministism
         for memA, memB in combinations(members, 2):
@@ -302,6 +306,10 @@ def calc_prec() -> int:
                 else:
                     tot_fp += 1
                     pair_stats[key]["fp"] += 1 # false positive
+                    grp = gene_indices[memA].synolog_grp
+                    ofh.write(f"{grp}\t{memA}\t{memB}\n")
+
+    ofh.close()
 
     return 0
 
