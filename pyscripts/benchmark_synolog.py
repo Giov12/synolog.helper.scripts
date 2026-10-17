@@ -7,12 +7,13 @@ from collections import defaultdict
 from itertools import combinations
 
 class Index:
-    __slots__ = ("synolog_idx", "orthodb_idx", "synolog_grp")
+    __slots__ = ("synolog_idx", "orthodb_idx", "synolog_grp", "orig_idx")
 
     def __init__(self) -> None:
         self.synolog_idx = -1 # default value
         self.orthodb_idx = -1
-        self.synolog_grp = -1 # goup ID
+        self.synolog_grp = -1 # group ID
+        self.orig_idx    = -1 # if this is ever change, this mem belonged to a single-species group
 
 class Discrepancy:
     #
@@ -79,6 +80,8 @@ def load_orthodb() -> int:
     fh  = gzip.open(orthodb_file, "rt") if orthodb_file.endswith(".gz") else open(orthodb_file, 'r')
     tot = 0
     cnt = 0
+    tmp = defaultdict(set) # orthogroup -> [species set]
+    TMP = dict()
 
     for line in fh:
         if (len(line) == 0 or line[0] == '#'):
@@ -103,11 +106,30 @@ def load_orthodb() -> int:
             grp = set()
         gene_indices[mem].orthodb_idx = len(orthodb_grps)
         grp.add(mem)
+        tmp[grpID].add(spp)
+        TMP[mem] = grpID
 
     fh.close()
 
     # add the last group
     orthodb_grps.append(grp)
+
+    para = set()
+    for grpID, spp_set in tmp.items():
+        if (len(spp_set) == 1):
+            para.add(grpID)
+
+    if (len(para) > 0):
+        excluded = 0
+
+        print(f"\nExcluding {len(para)} Orthodb orthogroups containing only members from a single species")
+        for mem_id, mem in gene_indices.items():
+            if (TMP[mem_id] in para):
+                mem.orig_idx    = mem.orthodb_idx
+                mem.orthodb_idx = -1
+                excluded        += 1
+
+        print(f"Exclude {excluded} genes found within single-species OrthoDB groups\n")
 
     msg = f"Orthodb: Skipped {cnt} orthologs not found in the annotations\n" + \
           f"Orthodb: {tot} orthologs were loaded into {len(orthodb_grps)} orthogroups"
