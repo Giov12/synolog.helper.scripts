@@ -13,7 +13,7 @@ class Index:
         self.synolog_idx = -1 # default value
         self.orthodb_idx = -1
         self.synolog_grp = -1 # group ID
-        self.orig_idx    = -1 # if this is ever change, this mem belonged to a single-species group
+        self.orig_idx    = -1 # if this is ever changed, this mem belonged to a single-species group
 
 class Discrepancy:
     #
@@ -31,22 +31,40 @@ class Discrepancy:
         self.n_members   = n  # synolog member count
         self.n_mapped    = 0  # orthoDB member count
 
+class ParaGene:
+    #
+    # evidence collected for a gene that was excluded because
+    # can be found in a single-species OrthoDB group
+    #
+    __slots__ = ("pairs", "exact", "is_loc", "spp_in_main")
+
+    def __init__(self, is_loc: bool, spp_in_main: bool) -> None:
+        self.pairs       = 0
+        self.exact       = False       # same gene symbol as co-member
+        self.is_loc      = is_loc
+        self.spp_in_main = spp_in_main # main orthogroup
+
 # singleton objects for this analysis
-orthodb_grps  = list() # list of sets of orthogroups
-synolog_grps  = list()
-orthodb_file  = ''
-synolog_file  = ''
-tot_tp        = 0
-tot_fp        = 0
-tot_fn        = 0
-misplaced_cnt = 0 # misplaced synolog genes
-checked_cnt   = 0 # how many misplaced genes we checked
-pairsSkipODB  = 0 # pairs skipped if not in orthodb
-pairsSkipSyn  = 0 # pairs skipped if not in synolog
-gene_indices  = defaultdict(Index)
-pair_stats    = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
-discrepancies = list()
-misplaced     = list()
+orthodb_grps   = list() # list of sets of orthogroups
+synolog_grps   = list()
+orthodb_file   = ''
+synolog_file   = ''
+tot_tp         = 0
+tot_fp         = 0
+tot_fn         = 0
+misplaced_cnt  = 0 # misplaced synolog genes
+checked_cnt    = 0 # how many misplaced genes we checked
+pairsSkipODB   = 0 # pairs skipped if not in orthodb
+pairsSkipSyn   = 0 # pairs skipped if not in synolog
+gene_indices   = defaultdict(Index)
+pair_stats     = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
+para_stats     = {"would_tp": 0, "would_fp": 0, "no_ref": 0} # would be if gene wasn't paralogous
+para_fp_by_grp = defaultdict(int) # count the number of synolog groups with orthodb paralogs
+discrepancies  = list()
+discreps_orig  = list()           # using original idxs (when dealing with paralogs)
+misplaced      = list()
+odb_spp_cache  = defaultdict(set) # orthodb idx -> set of species in that orthogroup
+para_genes     = dict()           # member -> Paragene
 
 def get_arguments() -> int:
     """get the arguments"""
@@ -73,15 +91,14 @@ def get_arguments() -> int:
 def load_orthodb() -> int:
     """create the reference orthodb orthogroups"""
 
-    global orthodb_grps, orthodb_file, gene_indices
+    global orthodb_grps, orthodb_file, gene_indices, odb_spp_cache
 
     cur = "-1"
     grp = set()
     fh  = gzip.open(orthodb_file, "rt") if orthodb_file.endswith(".gz") else open(orthodb_file, 'r')
     tot = 0
     cnt = 0
-    tmp = defaultdict(set) # orthogroup -> [species set]
-    TMP = dict()
+    tmp = dict()
 
     for line in fh:
         if (len(line) == 0 or line[0] == '#'):
@@ -104,10 +121,11 @@ def load_orthodb() -> int:
             orthodb_grps.append(grp)
             cur = grpID
             grp = set()
-        gene_indices[mem].orthodb_idx = len(orthodb_grps)
+        idx = len(orthodb_grps)
+        gene_indices[mem].orthodb_idx = idx
         grp.add(mem)
-        tmp[grpID].add(spp)
-        TMP[mem] = grpID
+        odb_spp_cache[idx].add(spp)
+        tmp[mem] = grpID
 
     fh.close()
 
@@ -124,7 +142,7 @@ def load_orthodb() -> int:
 
         print(f"\nExcluding {len(para)} Orthodb orthogroups containing only members from a single species")
         for mem_id, mem in gene_indices.items():
-            if (TMP[mem_id] in para):
+            if (tmp[mem_id] in para):
                 mem.orig_idx    = mem.orthodb_idx
                 mem.orthodb_idx = -1
                 excluded        += 1
@@ -189,16 +207,28 @@ def get_spp_id(mem: str) -> str:
     idx = mem.find('_')
     return mem[:idx]
 
+def is_para(mem: str) -> bool:
+    """return whether or not this member was in a single-species OrthoDB orthogroup"""
+    global gene_indices
+    return gene_indices[mem].orig_idx != -1
+
+def ref_idx(mem: str) -> int:
+    """return the original idx that this member belonged too"""
+    global gene_indices
+
+    idx = gene_indices[mem]
+    return idx.orig_idx if idx.orig_idx != -1 else idx.orthodb_idx
+
+
 def create_spp_pair_key(sppA: str, sppB: str) -> tuple[str, str]:
     """return a consistent tuple to use for hashing later"""
     return tuple(sorted((sppA, sppB))) # inner tuple is sorted, then converted to tuple
 
-
-def compute_discrepancies() -> int:
+def compute_discrepancies(targets: list[Discrepancy], use_orig: bool = False) -> int:
     """precompute all the possible discrepancies since our FN rate
        will be higher due to subsetting via synteny"""
 
-    global synolog_grps, gene_indices, discrepancies
+    global synolog_grps, gene_indices
 
     # prefill
 
@@ -209,7 +239,7 @@ def compute_discrepancies() -> int:
 
         # count the frequency of each orthogroup from orthoDB
         for mem in sorted(grp):
-            odb_idx = gene_indices[mem].orthodb_idx
+            odb_idx = ref_idx(mem) if use_orig else gene_indices[mem].orthodb_idx
             if (odb_idx == -1):
                 continue
             n_odb_mems += 1
@@ -220,7 +250,7 @@ def compute_discrepancies() -> int:
         # odb
         
         if (n_odb_mems == 0):
-            discrepancies.append(discrp)
+            targets.append(discrp)
             continue
 
         # get orthoDB idx that shows up
@@ -236,9 +266,65 @@ def compute_discrepancies() -> int:
         discrp.n_mapped  = n_odb_mems
         discrp.purity    = best / n_odb_mems
         discrp.is_subset = discrp.purity > 0.9 # we can change this later
-        discrepancies.append(discrp)
+        targets.append(discrp)
 
     return 0
+
+def check_para_pair(syn_idx: int, memA: str, memB: str, ofh) -> int:
+    """check a synolog paired gene doublet where one of the members is in a single-species orthodb group"""
+
+    global para_stats, discreps_orig, para_fp_by_grp, gene_indices, para_genes
+
+    #
+    # grab original orthodb indices
+    #
+    idxA = ref_idx(memA)
+    idxB = ref_idx(memB)
+
+    if (idxA == -1 or -idxB == -1):
+        para_stats["no_ref"] += 1 # was not within orthodb
+        return 0
+
+    discrp = discreps_orig[syn_idx]
+    synGrp = gene_indices[memA].synolog_grp
+
+    if ((discrp.is_subset == True and discrp.main_idx in (idxA, idxB)) == False):
+        para_stats["would_fp"] += 1
+        para_fp_by_grp[synGrp] += 1
+        return 0
+
+    #
+    # this would have been a true positive, so let's record
+    # for later justification
+    #
+    para_stats["would_tp"] += 1
+    ofh.write(f"{synGrp}\t{memA}\t{memB}\n")
+
+    # get gene symbols
+    symA    = memA.split('_')[1]
+    symB    = memB.split('_')[1]
+    entries = ((memA, symA, symB), (memA, symA, symB))
+
+    for entry in entries:
+        mem       = entry[0]
+        sym       = entry[1]
+        other_sym = entry[2]
+
+        if (is_para(mem) == False):
+            continue
+
+        if (mem not in para_genes):
+            exct    = sym.startswith("loc")
+            spp     = get_spp_id(mem)
+            in_main = spp in odb_spp_cache(discrp.main_idx)
+            para_genes[mem] = ParaGene(exct, in_main)
+
+        rec        = para_genes[mem]
+        rec.pairs += 1
+        rec.exact  = rec.exact or (sym == other_sym)
+
+    return 0
+
 
 def calc_recall() -> int:
     """Caclulate Synolog's Recall"""
@@ -291,6 +377,8 @@ def calc_prec() -> int:
            synolog_grps, pair_stats, discrepancies
 
     ofh = open("false_positives.tsv", 'w')
+    pfh = open("para_pairings.tsv", 'w')
+    pfh.write("#SynologGroup\tMemA\tMemB\n")
 
     for syn_idx, grp in enumerate(synolog_grps):
         members = sorted(grp) # ensure deterministism
@@ -298,20 +386,24 @@ def calc_prec() -> int:
             sppA = get_spp_id(memA)
             sppB = get_spp_id(memB)
 
-            if (sppA == sppB):
-                #
-                # we do not need to check tandem duplicates directly
-                # we can do see if the paralogs are grouped
-                # with the other orthologs (i.e., other species' genes)
-                # in the orthogroup
-                #
+            #
+            # we do not need to check tandem duplicates directly
+            # we can do see if the paralogs are grouped
+            # with the other orthologs (i.e., other species' genes)
+            # in the orthogroup
+            #
+            if (sppA == sppB):   
                 continue
+
             idxA = gene_indices[memA].orthodb_idx
             idxB = gene_indices[memB].orthodb_idx
 
             if (idxA == -1 or idxB == -1):
-                # one of them is not in orthodb
+                # one of them is not in orthodb or in a paralogous group
                 pairsSkipODB += 1
+
+                if (is_para(memA) or is_para(memB)):
+                    check_para_pair(syn_idx, memA, memB, pfh)
                 continue
 
             key = create_spp_pair_key(sppA, sppB)
@@ -332,6 +424,7 @@ def calc_prec() -> int:
                     ofh.write(f"{grp}\t{memA}\t{memB}\n")
 
     ofh.close()
+    pfh.close()
 
     return 0
 
@@ -421,7 +514,38 @@ def summarize() -> int:
         r     = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         print(f"{sppA:<10}{sppB:<10}{tp:>8}{fp:>8}{fn:>8}{p:>12.4f}{r:>10.4f}")
     
+    return 0
 
+def summarize_para() -> int:
+    """helper function to write out the overall paralogous stats"""
+
+    global para_genes, para_stats
+
+    if (len(para_genes) == 0):
+        return 1 # nothing to do hear
+
+    s = para_stats
+    n = len(para_genes)
+
+    print("\nPairs skipped because of the single-species exclusion (other gene in reference):")
+    print(f"  would have been rescued TP: {s['would_tp']}")
+    print(f"  would have been FP:         {s['would_fp']}")
+    print(f"  sum:                        {s['would_tp'] + s['would_fp']}")
+    print(f"  other gene not in reference (already skipped): {s['no_ref']}")
+
+    if (n == 0):
+        return 0
+    print(f"\nExcluded genes in rescued pairs: {n}")
+    print(f"  same symbol as a partner:           {sum(r['exact'] for r in para_genes.values()) / n:.3f}")
+    print(f"  its species already in the main OG: {sum(r['spp_in_main'] for r in para_genes.values()) / n:.3f}")
+    print(f"  LOC placeholder symbol:             {sum(r['loc'] for r in para_genes.values()) / n:.3f}")
+
+    by_spp = defaultdict(int)
+    for mem in para_genes:
+        by_spp[get_spp_id(mem)] += 1
+    print("  by species:", dict(sorted(by_spp.items())))
+
+    return 0
 def main() -> int:
     """entry point to benchmarking"""
 
@@ -433,7 +557,9 @@ def main() -> int:
     load_synolog()
 
     # precompute any discrepancies due to synteny
-    compute_discrepancies()
+    global discrepancies, discreps_orig
+    compute_discrepancies(discrepancies, use_orig=False)
+    compute_discrepancies(discreps_orig, use_orig=True)
 
     # calculate precision & recall
     calc_prec()
