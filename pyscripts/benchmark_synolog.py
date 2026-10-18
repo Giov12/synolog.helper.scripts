@@ -3,6 +3,7 @@
 import argparse
 import os
 import gzip
+import random
 from collections import defaultdict
 from itertools import combinations
 
@@ -36,19 +37,24 @@ class ParaGene:
     # evidence collected for a gene that was excluded because
     # can be found in a single-species OrthoDB group
     #
-    __slots__ = ("pairs", "exact", "is_loc", "spp_in_main")
+    __slots__ = ("syn_grp", "partner", "tp_pairs", "fp_pairs",
+                 "exact", "is_loc", "spp_in_main")
 
-    def __init__(self, is_loc: bool, spp_in_main: bool) -> None:
-        self.pairs       = 0
-        self.exact       = False       # same gene symbol as co-member
+    def __init__(self, syn_grp: int, partner: str, is_loc: bool) -> None:
+        self.syn_grp     = syn_grp
+        self.partner     = partner  # first co-member seen, as an example
+        self.tp_pairs    = 0        # pairs that orthodb would agree with
+        self.fp_pairs    = 0        # pairs it would have counted as FP
+        self.exact       = False    # same symbol as a co-member
         self.is_loc      = is_loc
-        self.spp_in_main = spp_in_main # main orthogroup
+        self.spp_in_main = False 
 
 # singleton objects for this analysis
 orthodb_grps   = list() # list of sets of orthogroups
 synolog_grps   = list()
 orthodb_file   = ''
 synolog_file   = ''
+seed           = 1234
 tot_tp         = 0
 tot_fp         = 0
 tot_fn         = 0
@@ -69,22 +75,26 @@ para_genes     = dict()           # member -> Paragene
 def get_arguments() -> int:
     """get the arguments"""
 
-    global orthodb_file, synolog_file
+    global orthodb_file, synolog_file, seed
 
     desc  = "Benchmark synolog's orthogroups.tsv file to a renamed orthodb dataset"
     shelp = "orthogroups.tsv file generated from synolog"
     ohelp = "A 4 column file generated with find_ensembl_ids for a orthodb dataset"
+    Shelp = "Random seed used when randomly selecting paralogous genes to check"
 
     parser = argparse.ArgumentParser(description = desc)
     parser.add_argument("-s", "--synolog", help=shelp, required=True, type=str)
     parser.add_argument("-o", "--orthodb", help=ohelp, required=True, type=str)
+    parser.add_argument("-S", "--seed",    help=Shelp, default=seed,  type=int)
 
-    args           = parser.parse_args()
+    args         = parser.parse_args()
     synolog_file = args.synolog
     orthodb_file = args.orthodb
+    seed         = args.seed
 
     assert os.path.isfile(synolog_file), f"Could not locate file: {synolog_file}"
     assert os.path.isfile(orthodb_file), f"Could not locate file: {orthodb_file}"
+    assert seed >= 0, f"Having a negative seed is not recommended"
 
     return 0
 
@@ -283,43 +293,47 @@ def check_para_pair(syn_idx: int, memA: str, memB: str, ofh) -> int:
         para_stats["no_ref"] += 1 # was not within orthodb
         return 0
 
-    discrp = discreps_orig[syn_idx]
-    synGrp = gene_indices[memA].synolog_grp
-
-    if ((discrp.is_subset == True and discrp.main_idx in (idxA, idxB)) == False):
-        para_stats["would_fp"] += 1
-        para_fp_by_grp[synGrp] += 1
-        return 0
-
-    #
-    # this would have been a true positive, so let's record
-    # for later justification
-    #
-    para_stats["would_tp"] += 1
-    ofh.write(f"{synGrp}\t{memA}\t{memB}\n")
-
-    # get gene symbols
-    symA    = memA.split('_', 1)[1]
-    symB    = memB.split('_', 1)[1]
-    entries = ((memA, symA, symB), (memB, symB, symA))
+    discrp    = discreps_orig[syn_idx]
+    synGrp    = gene_indices[memA].synolog_grp
+    concurent = (discrp.is_subset == True and discrp.main_idx in (idxA, idxB))
+    symA      = memA.split('_', 1)[1]
+    symB      = memB.split('_', 1)[1]
+    entries   = ((memA, symA, symB), (memB, symB, symA))
 
     for entry in entries:
         mem       = entry[0]
         sym       = entry[1]
         other_sym = entry[2]
 
-        if (is_para(mem) == False):
+        if (not is_para(mem)):
+            continue
+        if (mem not in para_genes):
+            para_genes[mem] = ParaGene(synGrp, other_sym, sym.startswith("loc"))
+
+        rec = para_genes[mem]
+        if (concurent == False):
+            rec.fp_pairs += 1
             continue
 
-        if (mem not in para_genes):
-            is_loc  = sym.startswith("loc")
-            spp     = get_spp_id(mem)
-            in_main = spp in odb_spp_cache[discrp.main_idx] and ref_idx(mem) != discrp.main_idx
-            para_genes[mem] = ParaGene(is_loc, in_main)
+        # it is a true positive case
+        rec.tp_pairs += 1
+        rec.exact     = rec.exact or (sym == other_sym)
 
-        rec        = para_genes[mem]
-        rec.pairs += 1
-        rec.exact  = rec.exact or (sym == other_sym)
+        # check if a paralog is in the orthodb group
+        if (rec.spp_in_main == False):
+            spp = get_spp_id(mem)
+            rec.spp_in_main = spp in odb_spp_cache[discrp.main_idx] and ref_idx(mem) != discrp.main_idx
+    
+    if (concurent == False):
+        para_stats["would_fp"] += 1
+        para_fp_by_grp[synGrp] += 1
+    else:
+        #
+        # this would have been a true positive, so let's record
+        # for later justification
+        #
+        para_stats["would_tp"] += 1
+        ofh.write(f"{synGrp}\t{memA}\t{memB}\n")
 
     return 0
 
@@ -454,6 +468,31 @@ def calc_misplaced() -> int:
                 misplaced.append((mem, syn_idx, odb_idx, discp.main_idx))
     return 0
 
+def write_para_sample() -> int:
+    """helper func() to write out n randomly selected genes to manually check"""
+
+    global seed, para_genes
+
+    n    = 100
+    rng  = random.Random(seed)       # own generator, so other code can't change the draw
+    mems = sorted(para_genes)         # sorted, so the draw doesn't depend on dict order
+    pick = rng.sample(mems, min(n, len(mems)))
+    outname = "para_sample.tsv"
+
+    with open(outname, 'w') as fh:
+        fh.write(f"# seed={seed} sampled={len(pick)} of {len(mems)} excluded genes seen in skipped pairs\n")
+        fh.write("#Gene\tSpecies\tSynologGroup\tExamplePartner\n")
+        for mem in sorted(pick):
+            ps = para_genes[mem]
+            fh.write(f"{mem}\t{get_spp_id(mem)}\t{ps.syn_grp}\t{ps.partner}\n")
+
+    with open(outname + ".key", 'w') as fh:
+        fh.write("#Gene\tConcordantPairs\tWouldBeFPPairs\n")
+        for mem in sorted(pick):
+            fh.write(f"{mem}\t{para_genes[mem].tp_pairs}\t{para_genes[mem].fp_pairs}\n")
+
+    return 0
+
 def summarize() -> int:
     """print the results of the comparisons"""
 
@@ -521,29 +560,36 @@ def summarize_para() -> int:
     if (len(para_genes) == 0):
         return 1 # nothing to do hear
 
-    s = para_stats
-    n = len(para_genes)
+    s         = para_stats
+    concurent = [g for g in para_genes.values() if g.tp_pairs > 0]
+    n_con      = len(concurent)
 
     print("\nPairs skipped because of the single-species exclusion (other gene in reference):")
-    print(f"  would have been rescued TP: {s['would_tp']}")
+    print(f"  would have been TP:         {s['would_tp']}")
     print(f"  would have been FP:         {s['would_fp']}")
     print(f"  sum:                        {s['would_tp'] + s['would_fp']}")
     print(f"  other gene not in reference (already skipped): {s['no_ref']}")
 
-    if (n == 0):
-        return 0
-    print(f"\nExcluded genes in rescued pairs: {n}")
-    print(f"  same symbol as a partner:           {sum(r.exact for r in para_genes.values()) / n:.3f}")
-    print(f"  its species already in the main OG: {sum(r.spp_in_main for r in para_genes.values()) / n:.3f}")
-    print(f"  LOC placeholder symbol:             {sum(r.is_loc for r in para_genes.values()) / n:.3f}")
+    n_all = len(para_genes)
+    print(f"\nExcluded genes seen in skipped pairs: {n_all}")
+    print(f"  only in would-be FP pairs: {n_all - n_con}")
+    print(f"  in at least one rescued pair: {n_con}")
 
-    by_spp = defaultdict(int)
-    for mem in para_genes:
-        by_spp[get_spp_id(mem)] += 1
-    print("  by species:", dict(sorted(by_spp.items())))
+    if (n_con > 0):
+        print(f"\nExcluded genes in rescued pairs: {n_con}")
+        print(f"  same symbol as a partner:           {sum(g.exact for g in concurent) / n_con:.3f}")
+        print(f"  its species already in the main OG: {sum(g.spp_in_main for g in concurent) / n_con:.3f}")
+        print(f"  LOC placeholder symbol:             {sum(g.is_loc for g in concurent) / n_con:.3f}")
+
+        by_spp = defaultdict(int)
+        for mem, g in para_genes.items():
+            if (g.tp_pairs > 0):
+                by_spp[get_spp_id(mem)] += 1
+        print("  by species:", dict(sorted(by_spp.items())))
 
     top = sorted(para_fp_by_grp.items(), key=lambda kv: kv[1], reverse=True)[:5]
-    print(f"  would-be FP pairs in {len(para_fp_by_grp)} synolog groups; top 5: {top}")
+    print(f"\n  would-be FP pairs in {len(para_fp_by_grp)} synolog groups; top 5: {top}")
+
     return 0
 
 def main() -> int:
@@ -571,6 +617,9 @@ def main() -> int:
     # summarize
     summarize()
     summarize_para()
+
+    # write some genes for manual inspection
+    write_para_sample()
 
     return 0
 
