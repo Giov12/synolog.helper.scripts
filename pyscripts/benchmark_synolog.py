@@ -296,19 +296,18 @@ def check_para_pair(syn_idx: int, memA: str, memB: str, ofh) -> int:
     discrp    = discreps_orig[syn_idx]
     synGrp    = gene_indices[memA].synolog_grp
     concurent = (discrp.is_subset == True and discrp.main_idx in (idxA, idxB))
-    symA      = memA.split('_', 1)[1]
-    symB      = memB.split('_', 1)[1]
-    entries   = ((memA, symA, symB), (memB, symB, symA))
+    entries   = ((memA, memB), (memB, memA))
 
     for entry in entries:
         mem       = entry[0]
-        sym       = entry[1]
-        other_sym = entry[2]
+        mem2      = entry[1]
+        sym       = mem.split('_', 1)[1]
+        other_sym = mem2.split('_', 1)[1]
 
         if (not is_para(mem)):
             continue
         if (mem not in para_genes):
-            para_genes[mem] = ParaGene(synGrp, other_sym, sym.startswith("loc"))
+            para_genes[mem] = ParaGene(synGrp, mem2, sym.startswith("loc"))
 
         rec = para_genes[mem]
         if (concurent == False):
@@ -479,17 +478,25 @@ def write_para_sample() -> int:
     pick = rng.sample(mems, min(n, len(mems)))
     outname = "para_sample.tsv"
 
-    with open(outname, 'w') as fh:
-        fh.write(f"# seed={seed} sampled={len(pick)} of {len(mems)} excluded genes seen in skipped pairs\n")
-        fh.write("#Gene\tSpecies\tSynologGroup\tExamplePartner\n")
-        for mem in sorted(pick):
-            ps = para_genes[mem]
-            fh.write(f"{mem}\t{get_spp_id(mem)}\t{ps.syn_grp}\t{ps.partner}\n")
+    fh1 = open(outname, 'w')
+    fh2 = open(outname + ".key", 'w')
 
-    with open(outname + ".key", 'w') as fh:
-        fh.write("#Gene\tConcordantPairs\tWouldBeFPPairs\n")
-        for mem in sorted(pick):
-            fh.write(f"{mem}\t{para_genes[mem].tp_pairs}\t{para_genes[mem].fp_pairs}\n")
+    # write some meta information & column headers
+    fh1.write(f"# seed={seed} sampled={len(pick)} of {len(mems)} excluded genes seen in skipped pairs\n")
+    fh1.write("#Gene\tSpecies\tSynologGroup\tExample_CoMember\n")
+    fh2.write("#Gene\tSpecies\tConcordantPairs\tWould_Be_FP_Pairs\n")
+
+    # one pass
+    for mem in sorted(pick):
+        ps  = para_genes[mem]
+        en  = mem.split('_', 1)
+        spp = en[0]
+        gen = en[1]
+        fh1.write(f"{gen}\t{spp}\t{ps.syn_grp}\t{ps.partner}\n")
+        fh2.write(f"{gen}\t{spp}\t{para_genes[mem].tp_pairs}\t{para_genes[mem].fp_pairs}\n")
+
+    fh1.close()
+    fh2.close()
 
     return 0
 
