@@ -98,7 +98,6 @@ def load_orthodb() -> int:
     fh  = gzip.open(orthodb_file, "rt") if orthodb_file.endswith(".gz") else open(orthodb_file, 'r')
     tot = 0
     cnt = 0
-    tmp = dict()
 
     for line in fh:
         if (len(line) == 0 or line[0] == '#'):
@@ -125,24 +124,24 @@ def load_orthodb() -> int:
         gene_indices[mem].orthodb_idx = idx
         grp.add(mem)
         odb_spp_cache[idx].add(spp)
-        tmp[mem] = grpID
 
     fh.close()
 
     # add the last group
     orthodb_grps.append(grp)
 
-    para = set()
-    for grpID, spp_set in tmp.items():
+    npara = 0
+    for grpID, spp_set in odb_spp_cache.items():
         if (len(spp_set) == 1):
-            para.add(grpID)
+            npara += 1
 
-    if (len(para) > 0):
+    if (npara > 0):
         excluded = 0
 
-        print(f"\nExcluding {len(para)} Orthodb orthogroups containing only members from a single species")
-        for mem_id, mem in gene_indices.items():
-            if (tmp[mem_id] in para):
+        print(f"\nExcluding {npara} Orthodb orthogroups containing only members from a single species")
+        for mem in gene_indices.values():
+            idx = mem.orthodb_idx
+            if (idx != -1 and len(odb_spp_cache[idx]) == 1):
                 mem.orig_idx    = mem.orthodb_idx
                 mem.orthodb_idx = -1
                 excluded        += 1
@@ -219,7 +218,6 @@ def ref_idx(mem: str) -> int:
     idx = gene_indices[mem]
     return idx.orig_idx if idx.orig_idx != -1 else idx.orthodb_idx
 
-
 def create_spp_pair_key(sppA: str, sppB: str) -> tuple[str, str]:
     """return a consistent tuple to use for hashing later"""
     return tuple(sorted((sppA, sppB))) # inner tuple is sorted, then converted to tuple
@@ -281,7 +279,7 @@ def check_para_pair(syn_idx: int, memA: str, memB: str, ofh) -> int:
     idxA = ref_idx(memA)
     idxB = ref_idx(memB)
 
-    if (idxA == -1 or -idxB == -1):
+    if (idxA == -1 or idxB == -1):
         para_stats["no_ref"] += 1 # was not within orthodb
         return 0
 
@@ -301,9 +299,9 @@ def check_para_pair(syn_idx: int, memA: str, memB: str, ofh) -> int:
     ofh.write(f"{synGrp}\t{memA}\t{memB}\n")
 
     # get gene symbols
-    symA    = memA.split('_')[1]
-    symB    = memB.split('_')[1]
-    entries = ((memA, symA, symB), (memA, symA, symB))
+    symA    = memA.split('_', 1)[1]
+    symB    = memB.split('_', 1)[1]
+    entries = ((memA, symA, symB), (memB, symB, symA))
 
     for entry in entries:
         mem       = entry[0]
@@ -314,17 +312,16 @@ def check_para_pair(syn_idx: int, memA: str, memB: str, ofh) -> int:
             continue
 
         if (mem not in para_genes):
-            exct    = sym.startswith("loc")
+            is_loc  = sym.startswith("loc")
             spp     = get_spp_id(mem)
-            in_main = spp in odb_spp_cache(discrp.main_idx)
-            para_genes[mem] = ParaGene(exct, in_main)
+            in_main = spp in odb_spp_cache[discrp.main_idx] and ref_idx(mem) != discrp.main_idx
+            para_genes[mem] = ParaGene(is_loc, in_main)
 
         rec        = para_genes[mem]
         rec.pairs += 1
         rec.exact  = rec.exact or (sym == other_sym)
 
     return 0
-
 
 def calc_recall() -> int:
     """Caclulate Synolog's Recall"""
@@ -536,16 +533,19 @@ def summarize_para() -> int:
     if (n == 0):
         return 0
     print(f"\nExcluded genes in rescued pairs: {n}")
-    print(f"  same symbol as a partner:           {sum(r['exact'] for r in para_genes.values()) / n:.3f}")
-    print(f"  its species already in the main OG: {sum(r['spp_in_main'] for r in para_genes.values()) / n:.3f}")
-    print(f"  LOC placeholder symbol:             {sum(r['loc'] for r in para_genes.values()) / n:.3f}")
+    print(f"  same symbol as a partner:           {sum(r.exact for r in para_genes.values()) / n:.3f}")
+    print(f"  its species already in the main OG: {sum(r.spp_in_main for r in para_genes.values()) / n:.3f}")
+    print(f"  LOC placeholder symbol:             {sum(r.is_loc for r in para_genes.values()) / n:.3f}")
 
     by_spp = defaultdict(int)
     for mem in para_genes:
         by_spp[get_spp_id(mem)] += 1
     print("  by species:", dict(sorted(by_spp.items())))
 
+    top = sorted(para_fp_by_grp.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    print(f"  would-be FP pairs in {len(para_fp_by_grp)} synolog groups; top 5: {top}")
     return 0
+
 def main() -> int:
     """entry point to benchmarking"""
 
@@ -570,6 +570,7 @@ def main() -> int:
 
     # summarize
     summarize()
+    summarize_para()
 
     return 0
 
