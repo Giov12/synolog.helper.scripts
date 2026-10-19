@@ -37,12 +37,12 @@ class ParaGene:
     # evidence collected for a gene that was excluded because
     # can be found in a single-species OrthoDB group
     #
-    __slots__ = ("syn_grp", "partner", "tp_pairs", "fp_pairs",
+    __slots__ = ("syn_grp", "comember", "tp_pairs", "fp_pairs",
                  "exact", "is_loc", "spp_in_main")
 
-    def __init__(self, syn_grp: int, partner: str, is_loc: bool) -> None:
+    def __init__(self, syn_grp: int, comember: str, is_loc: bool) -> None:
         self.syn_grp     = syn_grp
-        self.partner     = partner  # first co-member seen, as an example
+        self.comember    = comember # first co-member seen, as an example
         self.tp_pairs    = 0        # pairs that orthodb would agree with
         self.fp_pairs    = 0        # pairs it would have counted as FP
         self.exact       = False    # same symbol as a co-member
@@ -492,7 +492,7 @@ def write_para_sample() -> int:
         en  = mem.split('_', 1)
         spp = en[0]
         gen = en[1]
-        fh1.write(f"{gen}\t{spp}\t{ps.syn_grp}\t{ps.partner}\n")
+        fh1.write(f"{gen}\t{spp}\t{ps.syn_grp}\t{ps.comember}\n")
         fh2.write(f"{gen}\t{spp}\t{para_genes[mem].tp_pairs}\t{para_genes[mem].fp_pairs}\n")
 
     fh1.close()
@@ -580,11 +580,11 @@ def summarize_para() -> int:
     n_all = len(para_genes)
     print(f"\nExcluded genes seen in skipped pairs: {n_all}")
     print(f"  only in would-be FP pairs: {n_all - n_con}")
-    print(f"  in at least one rescued pair: {n_con}")
+    print(f"  in at least one con pair: {n_con}")
 
     if (n_con > 0):
-        print(f"\nExcluded genes in rescued pairs: {n_con}")
-        print(f"  same symbol as a partner:           {sum(g.exact for g in concurent) / n_con:.3f}")
+        print(f"\nExcluded genes in concordant pairs: {n_con}")
+        print(f"  same symbol as a co-member:         {sum(g.exact for g in concurent) / n_con:.3f}")
         print(f"  its species already in the main OG: {sum(g.spp_in_main for g in concurent) / n_con:.3f}")
         print(f"  LOC placeholder symbol:             {sum(g.is_loc for g in concurent) / n_con:.3f}")
 
