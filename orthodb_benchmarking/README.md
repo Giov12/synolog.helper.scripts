@@ -75,7 +75,9 @@ gtfs/
 $ ./find_ensembl_ids -o orthodb_orthogroups.tsv.gz -a gtfs/
 ```
 
-The renamed orthogroups were then compared to Synolog's `orthologs.tsv` file using `../pyscripts/benchmark_synolog.py`
+The renamed orthogroups were then compared to Synolog's `orthologs.tsv` file using `../pyscripts/benchmark_synolog.py`. To investigate gene pairings flagged as false positives, the script selects at most 100 random pairings that can be manually inspected. For reproducibility, we set the `--seed` to 1234. This will generate a file called `para_samples.tsv`. The `para_pairings.tsv` file contains all the pairings flagged as a false positive relative to the orthogroups in `OrthoDB`.
 ```
-$ ./benchmark_synolog.py -o renamed.orthodb_orthogroups.tsv.gz -s orthologs.tsv
+$ ./benchmark_synolog.py -o renamed.orthodb_orthogroups.tsv.gz -s orthologs.tsv --seed 1234
 ```
+
+The gene entries in `para_samples.tsv` were manually inspected (e.g., blasting to NCBI's protein database) to determine whether there was biological evidence (e.g., shared gene family) to support `synolog`'s assignments.
