@@ -327,16 +327,20 @@ parse_annotation(const string &ann){
                     gene_id = e.value;
                 }
             }
+
+            //
+            // use emblace so that only the first entry is set
+            //
             if (!gene_id.empty()){
                 if (parts[2] != "gene" && prot_id.empty()){
                     // cerr << "Unable to find protein_id in " << ann << '\n' << line;
                     missing_prots++;
                 }
                 else if (!prot_id.empty()) {
-                   org_map.protein_map[prot_id] = gene_id; 
+                    org_map.protein_map.emplace(prot_id, gene_id);
                 }    
                 if (!GeneID.empty()){
-                    org_map.gene_id_map[GeneID] = gene_id;
+                    org_map.gene_id_map.emplace(GeneID, gene_id);
                 }
             }
             else {
