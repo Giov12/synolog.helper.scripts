@@ -71,26 +71,30 @@ discreps_orig  = list()           # using original idxs (when dealing with paral
 misplaced      = list()
 odb_spp_cache  = defaultdict(set) # orthodb idx -> set of species in that orthogroup
 para_genes     = dict()           # member -> Paragene
+include_retro  = False
 
 def get_arguments() -> int:
     """get the arguments"""
 
-    global orthodb_file, synolog_file, seed
+    global orthodb_file, synolog_file, seed, include_retro
 
     desc  = "Benchmark synolog's orthogroups.tsv file to a renamed orthodb dataset"
     shelp = "orthogroups.tsv file generated from synolog"
     ohelp = "A 4 column file generated with find_ensembl_ids for a orthodb dataset"
     Shelp = "Random seed used when randomly selecting paralogous genes to check"
+    ihelp = "Include retrogenes predicted by synolog [default: false]"
 
     parser = argparse.ArgumentParser(description = desc)
     parser.add_argument("-s", "--synolog", help=shelp, required=True, type=str)
     parser.add_argument("-o", "--orthodb", help=ohelp, required=True, type=str)
     parser.add_argument("-S", "--seed",    help=Shelp, default=seed,  type=int)
+    parser.add_argument("-i", "--include", help=ihelp, action="store_true")
 
-    args         = parser.parse_args()
-    synolog_file = args.synolog
-    orthodb_file = args.orthodb
-    seed         = args.seed
+    args          = parser.parse_args()
+    synolog_file  = args.synolog
+    orthodb_file  = args.orthodb
+    seed          = args.seed
+    include_retro = args.include
 
     assert os.path.isfile(synolog_file), f"Could not locate file: {synolog_file}"
     assert os.path.isfile(orthodb_file), f"Could not locate file: {orthodb_file}"
@@ -168,7 +172,7 @@ def load_orthodb() -> int:
 def load_synolog() -> int:
     """create load the synolog orthogroups"""
 
-    global synolog_grps, synolog_file
+    global synolog_grps, synolog_file, include_retro
 
     # similarly to loading orthodb members, load synolog members
     
@@ -176,12 +180,16 @@ def load_synolog() -> int:
     grp = set()
     fh  = gzip.open(synolog_file, "rt") if synolog_file.endswith(".gz") else open(synolog_file, 'r')
     tot = 0
+    rcn = 0 # retrocount
     
     for line in fh:
         if (len(line) == 0 or line[0] == '#'):
             continue
         fields = line.split('\t')
-        assert len(fields) in [12, 10], f"Malformed line encountered in {synolog_file}:\n{line}" 
+        assert len(fields) in [12, 10], f"Malformed line encountered in {synolog_file}:\n{line}"
+        if (len(fields) == 12 and include_retro == False and fields[7] == 'R'):
+            rcn += 1
+            continue 
         tot  += 1
         grpID = fields[0]
         spp   = fields[4].lower()
@@ -208,6 +216,8 @@ def load_synolog() -> int:
     msg = f"Synolog: {tot} orthologs were loaded into {len(synolog_grps)} orthogroups"
     
     print(msg)
+    if (include_retro == False):
+        print(f"Ignored {rcn} retrogenes from synolog")
 
     return 0
 
