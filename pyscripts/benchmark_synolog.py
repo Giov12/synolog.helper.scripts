@@ -80,7 +80,7 @@ def get_arguments() -> int:
 
     desc  = "Benchmark synolog's orthogroups.tsv file to a renamed orthodb dataset"
     shelp = "orthogroups.tsv file generated from synolog"
-    ohelp = "A 4 column file generated with find_ensembl_ids for a orthodb dataset"
+    ohelp = "A 4 column file generated from rename_odb_genes for a orthodb dataset"
     Shelp = "Random seed used when randomly selecting paralogous genes to check"
     ihelp = "Include retrogenes predicted by synolog [default: false]"
 
