@@ -211,6 +211,8 @@ def map_syn_to_odb() -> int:
                 if (mem not in mems):
                     mems.append(mem)
 
+    return 0
+
 def acceptable(spp: str, genes: list[str]) -> bool:
     """helper function to determine if the gene(s) are single-copy or tandem paralogs"""
 
@@ -379,11 +381,21 @@ def find_gar_groups() -> int:
 
     return 0
 
+def assign_groups() -> int:
+    """tiny helper function that just orchestrates for for loop"""
+
+    global gar_groups
+
+    for gar_group in gar_groups:
+        add_candidates(gar_group)
+
+    return 0
+
 def count_groups() -> int:
     """count the gar-anchored groups that have a paralog group, & write pairs"""
 
-    global gar_groups, counts, categories, WITH_PARALOG_GROUP, PARALOG_NO_GAR, \
-           PARALOG_NO_GAR_ODB, PARALOG_TELEOST_ONLY
+    global gar_groups, counts, categories, categ_counts, WITH_PARALOG_GROUP, \
+           PARALOG_NO_GAR, PARALOG_NO_GAR_ODB, PARALOG_TELEOST_ONLY
 
     hdr = "GarGroup\tGarGene\tCorrespondingGroup\tCorrespondingType\tGarGroup_drer\t" + \
           "GarGroup_olat\tCorr_drer\tCorr_olat\n"
@@ -405,14 +417,55 @@ def count_groups() -> int:
         if (len(no_gar) > 0):
             counts[PARALOG_NO_GAR] += 1
             best = select_best(no_gar)
-            row  = [gar_group.id, gar_group.gar_gene, best.id, best.type,
+            row  = [gar_group.id, gar_group.gar_gene, best.id, best.category,
                    ','.join(gar_group.zf_genes), ','.join(gar_group.md_genes),
                    ','.join(best.zf_genes), ','.join(best.md_genes)]
             ofh.write('\t'.join(row) + '\n')
 
         # do some finer scale counting
+        gar_found  = False
+        fish_found = False
+        for cand in no_gar:
+            if (cand.one_gar == True):
+                gar_found = True
+                if (cand.category == categories[0]):
+                    fish_found = True
+        if (gar_found):
+            counts[PARALOG_NO_GAR_ODB]   += 1
+        if (fish_found):
+            counts[PARALOG_TELEOST_ONLY] += 1
+
+        categ_counts[select_best(gar_group.cands).category] += 1
 
     ofh.close()
+
+    return 0
+
+def summarize() -> int:
+    """print the orthogroup counts"""
+
+    global ONE_GAR_TWO_FISH, EXCLUDED_COPIES, GAR_ANCHORED, OFF_CHROMS, \
+           WITH_PARALOG_GROUP, counts, categ_counts, categories
+
+    # print these counts in specific order
+    print_order = [ONE_GAR_TWO_FISH,   EXCLUDED_COPIES, GAR_ANCHORED,       OFF_CHROMS, 
+                   WITH_PARALOG_GROUP, PARALOG_NO_GAR,  PARALOG_NO_GAR_ODB, PARALOG_TELEOST_ONLY]
+
+    n = counts[GAR_ANCHORED]
+    print("\nCounts:")
+    for key in print_order:
+        print(f"\t{key}: {counts[key]}")
+
+    print(f"\nPercent of the {n} gar-anchored groups:")
+    for key in print_order[4:]:
+        pct = counts[key] / n if n > 0 else 0.0
+        print(f"  {key}: {counts[key]} ({pct:.1%})")
+
+    print("\nCategory of the preferred paralog group:")
+    for cat in categories:
+        print(f"  {cat}: {categ_counts[cat]}")
+
+    return 0
 
 def main() -> int:
     """entry point to benchmarking"""
@@ -423,8 +476,20 @@ def main() -> int:
     # load datasets
     load_synolog()
     load_orthodb()
-    
 
+    # map the synolog genes to the orthodb orthogroups
+    map_syn_to_odb()
+
+    # now do the actual grouping
+    find_gar_groups()
+    assign_groups()
+
+    # write results
+    count_groups()
+
+    # print results
+    summarize()
+    
     return 0
 
 if __name__ == "__main__":

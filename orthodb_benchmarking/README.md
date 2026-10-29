@@ -81,3 +81,9 @@ $ ./benchmark_synolog.py -o renamed.orthodb_orthogroups.tsv.gz -s orthologs.tsv 
 ```
 
 The gene entries in `para_samples.tsv` were manually inspected (e.g., blasting to NCBI's protein database) to determine whether there was biological evidence (e.g., shared gene family) to support `synolog`'s assignments.
+
+## Ohnolog Detection
+For identifying putative ohnologs between gar and the other two fish species in the dataset (zebrafish and medaka), script `../pyscripts/find_gar_duplicates.py` was used.
+```
+$ ./find_gar_duplicates.py -s orthologs.tsv -o renamed.orthodb_orthogroups.tsv.gz
+```
