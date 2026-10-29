@@ -1,5 +1,5 @@
 # OrthoDB v11 Benchmarking
-This repository contains the workflow used when benchmarking the Synolog's orthogroups to those downloaded in our benchmarking analysis using OrthoDB v11 orthogroups as a reference.
+This repository contains the workflow used when benchmarking the Synolog's orthogroups to those downloaded in our benchmarking analysis using OrthoDB v11 orthogroups as a reference. Also found here is the newick file (`tree.nwk`) used with `synolog` for this analysis.
 
 The orthoDB data was obtained from [here](https://data.orthodb.org/v12/download/odb_data_dump/) with much of the code used for filtering the data found in `../cpp.files/`. For our first step, we filtered the  `odb12v2_OGs.tab.gz` file to retain orthogroups at the vertebrata taxonomical level
 ```
