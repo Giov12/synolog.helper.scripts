@@ -183,7 +183,7 @@ def select_candidates() -> int:
         msg = "No candidates past any of the filters. Nothing to write."
         sys.exit(msg)
     print(f"{ambigous} segmental duplications were mapped to multiple orthogroups and ignored")
-    print(f"{low_supp} segmental duplications did not meet the minimum number of species support required")
+    print(f"{low_supp} segmental duplications did not meet the minimum number of species support ({min_spp}) required")
     print(f"Found {len(selected)} candidate segmental duplications to add to orthogroups.tsv")
 
     return 0
