@@ -72,29 +72,34 @@ misplaced      = list()
 odb_spp_cache  = defaultdict(set) # orthodb idx -> set of species in that orthogroup
 para_genes     = dict()           # member -> Paragene
 include_retro  = False
+rescue_splits  = False           # when an orthodb is split across >1 synolog orthogroup
+tot_rescued    = 0
 
 def get_arguments() -> int:
     """get the arguments"""
 
-    global orthodb_file, synolog_file, seed, include_retro
+    global orthodb_file, synolog_file, seed, include_retro, rescue_splits
 
     desc  = "Benchmark synolog's orthogroups.tsv file to a renamed orthodb dataset"
     shelp = "orthogroups.tsv file generated from synolog"
     ohelp = "A 4 column file generated from rename_odb_genes for a orthodb dataset"
     Shelp = "Random seed used when randomly selecting paralogous genes to check"
     ihelp = "Include retrogenes predicted by synolog [default: false]"
+    rhelp = "If set, do not penalize orthodb pairs not found in Synolog when the OrthoDB group is split across >1 synolog orthogroup"
 
     parser = argparse.ArgumentParser(description = desc)
     parser.add_argument("-s", "--synolog", help=shelp, required=True, type=str)
     parser.add_argument("-o", "--orthodb", help=ohelp, required=True, type=str)
     parser.add_argument("-S", "--seed",    help=Shelp, default=seed,  type=int)
     parser.add_argument("-i", "--include", help=ihelp, action="store_true")
+    parser.add_argument("-r", "--rescue",  help=rhelp, action="store_true")
 
     args          = parser.parse_args()
     synolog_file  = args.synolog
     orthodb_file  = args.orthodb
     seed          = args.seed
     include_retro = args.include
+    rescue_splits = args.rescue
 
     assert os.path.isfile(synolog_file), f"Could not locate file: {synolog_file}"
     assert os.path.isfile(orthodb_file), f"Could not locate file: {orthodb_file}"
@@ -356,9 +361,13 @@ def calc_recall() -> int:
     #
 
     global tot_fn, pairsSkipSyn, gene_indices, \
-           orthodb_grps, pair_stats
+           orthodb_grps, pair_stats, rescue_splits, tot_rescued
 
-    for grp in orthodb_grps:
+    if (rescue_splits == True):
+        rfh = open("rescued_pairs.tsv", 'w')
+        rfh.write("#SynologGroupA\tMemA\tSynologGroupB\tMemB\n")
+
+    for odb_idx, grp in enumerate(orthodb_grps):
             members = sorted(grp) # ensure deterministism
             for memA, memB in combinations(members, 2):
                 sppA = get_spp_id(memA)
@@ -379,9 +388,21 @@ def calc_recall() -> int:
                     pair_stats[key]["fn"] += 1
                     continue    
                 elif (idxA != idxB):
-                    tot_fn += 1
-                    pair_stats[key]["fn"] += 1 # false negatives, synolog placed them separately
-    
+                    discpA = discrepancies[idxA]
+                    discpB = discrepancies[idxB]
+                    if (rescue_splits == True and discpA.is_subset and discpB.is_subset and
+                        discpA.main_idx == odb_idx and discpB.main_idx == odb_idx):
+                        tot_rescued += 1
+                        grpA         = gene_indices[memA].synolog_grp
+                        grpB         = gene_indices[memB].synolog_grp
+                        rfh.write(f"{grpA}\t{memA}\t{grpB}\t{memB}\n")
+                    else:
+                        tot_fn += 1
+                        pair_stats[key]["fn"] += 1 # false negatives, synolog placed them separately
+
+    if (rescue_splits == True):
+        rfh.close()
+        
     return 0
 
 def calc_prec() -> int:
@@ -515,7 +536,7 @@ def summarize() -> int:
 
     global tot_tp, tot_fp, tot_fn, pair_stats, \
            pairsSkipODB, pairsSkipSyn, misplaced_cnt, \
-           checked_cnt
+           checked_cnt, rescue_splits, tot_rescued
 
     # calculate precision as TP / (TP + FP)
     pSum = (tot_tp + tot_fp)
@@ -543,6 +564,8 @@ def summarize() -> int:
     print(f"Global: precision={precision:.4f} recall={recall:.4f} f1={f1:.4f}")
     print(f"Skipped (gene not in orthodb reference): {pairsSkipODB}")
     print(f"Skipped (gene not in synolog output):    {pairsSkipSyn}")
+    if (rescue_splits == True):
+        print(f"Rescued (split across subset groups):    {tot_rescued}")        
 
     if (checked_cnt == 0):
         gene_precision = 0.0
