@@ -4,8 +4,8 @@ import argparse
 import sys
 import os
 import gzip
-import threading
 from   glob import glob
+from   typing import TextIO
 from   collections import defaultdict
 from   concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -17,220 +17,47 @@ from   concurrent.futures import ThreadPoolExecutor, as_completed
 
 sppCache   = ''
 orthoFile  = ''
-orgs       = list()
+orgs       = dict()
 groupIDs   = set()
 numThreads = 1
 
 class GENE:
 
-    __slots__ = ("id", "grp", "transcripts", "records")
-    
-    def __init__(self, id_: str, orthogroup) -> None:
+    __slots__ = ("id", "transcripts", "others", "group_id")
+
+    #
+    # others -> Other Org -> Gene_ID -> Blast Hit
+    #
+    def __init__(self, id_: str, group_id: str) -> None:
         self.id          = id_
-        self.grp         = orthogroup
+        self.group_id    = group_id
+        self.orthologs   = defaultdict(lambda d: defaultdict(float))
+        self.paralogs    = defaultdict(lambda d: defaultdict(float))
         self.transcripts = set()
-        self.records     = list()
 
-    def process(self, transcript: str) -> None:
-        self.transcripts.discard(transcript)
-
-    def done(self) -> bool:
-        return len(self.transcripts) == 0
-    
-    def has_records(self) -> bool:
-        return len(self.records) > 0
-    
-    def submit(self, org: str, incr: int) -> None:
-        # add this gene to the orthogroup
-        self.grp.add_mem(org, self, incr)
-
- 
 class Org:
 
-    __slots__ = ("id", "genes", "transcripts", "_left", "_pairs")
+    __slots__ = ("id", "name", "genes", "transcripts")
 
     def __init__(self, id_ : str) -> None:
         self.id          = id_
+        self.name        = ''
         self.genes       = dict() # gene id -> Gene
         self.transcripts = dict() # transcript id -> gene id
-        self._left       = set()  # genes needing prot ids
 
-    def add_pair(self, gene_id: str, dup_id: str, blockID: str) -> None:
-
-        if (gene_id not in self.genes):
-            self.genes[gene_id] = GENE(gene_id, None)
-            self._left.add(gene_id)
-        
-        if (dup_id not in self.genes):
-            self.genes[dup_id] = GENE(dup_id, None)
-            self._left.add(dup_id)
-
-        self._pairs.append((gene_id, dup_id, int(blockID)))
 
     def add_transcript(self, gene_id: str, rec_id: str) -> None:
         self.genes[gene_id].transcripts.add(rec_id)
         self.transcripts[rec_id] = gene_id
-        self._left.discard(gene_id)
 
-    def has_remaining(self) -> bool:
-        return len(self._left) > 0
+    def missing_transcripts(self) -> bool:
+        return len(self.transcripts) == 0
 
-    def rem_count(self) -> int:
-        return len(self._left)
-    
-    def get_remaining(self) -> str:
-        return ','.join(self._left)
-    
-    def add_record(self, id_: str, header: str, seq: str, longest: bool) -> None:
-        gene_id = self.transcripts[id_]  # id_ is a protein/transcript id
-        rec     = Seq(header, seq)
-        gene    = self.genes[gene_id]
-
-        # we have processed this record
-        gene.process(id_)
-
-        if (longest == False or len(gene.records) == 0):
-            gene.records.append(rec)
-        else:
-            if (len(gene.records[0]) < len(rec)):
-                # replace the current id
-                gene.records[0] = rec
-        
-        #
-        # we have looked at every sequence id
-        # and we can now add it to the orthogroup
-        #
-        if (gene.grp != None and gene.done()):
-            gene.submit(self.id, 1)
-
-    def write_remaining(self) -> None:
-        for gene in self.genes.values():
-            if (gene.done() == False and gene.has_records()):
-                gene.submit(self.id, 0)
-
-    def add_remaining(self) -> None:
-        for gene in self.genes.values():
-            if (gene.done() == False and gene.has_records()):
-                gene.submit(self.id, 0)
-
-    def write_pairs(self) -> None:
-
-        global outPath
-
-        #
-        # prev will indicate when to
-        # restart the pair num
-        #
-        prev    = -1
-        pairNum = 0
-
-        for pair in self._pairs:
-            blockID = pair[2]
-            if (blockID != prev):
-                pairNum = 0
-                prev    = blockID
-            out = f"{outPath}/{self.id}-seg_block_{blockID}_pair{pairNum}.fasta"
-            ofh = open(out, 'w')
-            for i in range(2):
-                geneID = pair[i]
-                gene   = self.genes[geneID]
-                for rec in gene.records:
-                    header = rec.header + f" ({geneID})\n"
-                    seq    = textwrap.fill(rec.seq, width=60) + '\n'
-                    ofh.write(header)
-                    ofh.write(seq)
-            ofh.close()
-            pairNum += 1
-
-#############################################################################################################################
-#                                                  Command Line Options                                                     #
-#############################################################################################################################
-
-def set_arguments(args) -> int:
-    """helper function to check the required parameters shared across operations"""
-
-    global path, sppCache, outPath, groupsFile, singleCopy, \
-           allOGroups, Longest, numThreads, lock, Segmental
-
-    #
-    # path check
-    #
-    if (args.path == ''):
-        msg = "--path is required"
-        sys.exit(msg)
-    elif (os.path.isdir(args.path) == False):
-        msg = f"Could not locate path {args.path}/"
-        sys.exit(msg)
-    elif (args.path[-1] == '/'):
-        args.path = args.path[:-1]
-
-    #
-    # cache check
-    #
-    if (args.cache == ''):
-        msg = "--cache is required"
-        sys.exit(msg)
-    elif (os.path.isdir(args.cache) == False):
-        msg = f"Could not locate path {args.cache}/"
-        sys.exit(msg)
-    elif (args.cache[-1] == '/'):
-        args.cache = args.cache[:-1]
-    
-    #
-    # outdir check
-    #
-    if (args.out_path == ''):
-        args.out_path = '.'
-    elif (os.path.isdir(args.out_path) == False):
-        msg = f"Could not locate path {args.out_path}/"
-        sys.exit(msg)
-    elif (args.out_path[-1] == '/'):
-        args.out_path = args.out_path[:-1]
-
-    #
-    # orthogroups file check
-    #
-    if (args.orthogroups != ''):
-        if (os.path.isfile(args.orthogroups) == False):
-            msg = f"Could not locate file {args.orthogroups}/"
-            sys.exit(msg)
-        if (args.single_copy):
-            msg = f"--orthogroups will take precedence over --single_copy"
-            print(msg)
-            args.single_copy = False
-    if (type(args.threads) != int):
-        msg = "--threads requires an integer as an argument"
-        sys.exit(msg)
-    else:
-        if (args.threads < 1):
-            msg = "--threads must greater than 0"
-            sys.exit(msg)
-        else:
-            args.threads = min(args.threads, os.cpu_count())
-
-    # set the global variables
-    path       = args.path
-    sppCache   = args.cache
-    outPath    = args.out_path
-    groupsFile = args.orthogroups
-    singleCopy = args.single_copy
-    allOGroups = args.all
-    Longest    = args.longest
-    numThreads = args.threads
-    Segmental  = args.segmental
-
-    if (groupsFile == '' and allOGroups == False and singleCopy == False and Segmental == False):
-        msg = "Neither --orthogroups, --singleCopy, --segmental, or --all were selected. Defaulting to all.."
-        print(msg, file=sys.stderr)
-        allOGroups = True
-
-    if (numThreads > 1):
-        lock = threading.Lock()
-
-    return 0
     
 def parse_command_line() -> int:
     """helper function to get the user's arguments to ensure a proper start"""
+
+    global sppCache, orthoFile, groupIDs, numThreads
     
     desc   = "Code used to parse the species cache to generate a heatmap of blast hits used in the Synolog Manuscript"
     parser = argparse.ArgumentParser(description=desc)
@@ -248,81 +75,56 @@ def parse_command_line() -> int:
     parser.add_argument("--ids",         help=ihelp, type=str, required=True)
     parser.add_argument("--threads",     help=thelp, type=int, default=1)
 
-    args = parser.parse_args()
+    args       = parser.parse_args()
+    sppCache   = args.cache
+    orthoFile  = args.orthologs
+    ids_list   = args.ids
+    numThreads = args.threads
 
-    if (len(vars(args)) == 0):
-        parser.print_help()
-        sys.exit()
-    
-    # now set the global variables
-    set_arguments(args)
+    assert os.path.isdir(sppCache),   f"Could not locate directory {sppCache}"
+    assert os.path.isfile(orthoFile), f"Could not locate file {orthoFile}"
 
-    return 0
+    for id_ in ids_list.split(','):
+        if (id_.isdigit() == False):
+            sys.exit(f"Invalid orthogroup ID provided: {id_}")
+        groupIDs.add(id_)
 
-#############################################################################################################################
-#                                            Helper Functions (Segmentals)                                                  #
-#############################################################################################################################
-
-def get_segmental_files(segFiles: list[str]) -> int:
-    """retrieve all the segmental tsv files in the provided path"""
-
-    global path
-    
-    suffix = "*_segmentalduplication_clusters.tsv"
-    segFiles.extend(glob(f"{path}/{suffix}"))
-
-    if (len(segFiles) == 0):
-        msg = f"Could not locate any *{suffix} files in {path}/"
-        sys.exit(msg) 
+    assert len(groupIDs) > 0, f"No orthogroup IDs were provided"
+    assert numThreads > 0,    f"--threads must be at least 1"
 
     return 0
 
-#############################################################################################################################
-#                                    Parsing Functions (Orthologs/groups/Segmentals)                                        #
-#############################################################################################################################
+def open_file(infile: str) -> TextIO:
+    """helper function to shorten and in-line conditional"""
 
-def read_orthogroup_file(group_ids: set[str]) -> int:
-    """read in the group ids found in the orthogroup ids"""
+    return gzip.open(infile, "rt") if infile.endswith(".gz") else open(infile, 'r')
 
-    global groupsFile
+def populate(orgs: dict[str, Org]) -> int:
+    """helper function to initiate all defaults"""
 
-    fh      = gzip.open(groupsFile, "rt") if groupsFile.endswith(".gz") else open(groupsFile, 'r')
-    lineNum = 0
-
-    for line in fh:
-        lineNum += 1
-        if (len(line) == 0):
-            continue
-        line = line.strip()
-        if (line.isdigit() == False):
-            msg = f"Error at line {lineNum} in {groupsFile}\n" + \
-                  f"Expected an integer for group ID. " + \
-                  f"Found {line}"
-            sys.exit(msg)
-        groupID = line
-        group_ids.add(groupID)
-
-    fh.close()
-
+    for orgA_id, orgA in orgs.items():
+        genes = orgA.genes
+        for orgB_id, orgB in orgs.items():
+            if (orgA_id == orgB_id):
+                continue
+            for geneA_id, geneA in genes.items():
+                for geneB_id, geneB in orgB.genes.items():
+                    if (geneA.group_id == geneB.group_id):
+                        geneA.orthologs[orgB_id][geneB_id] = 0.0
+                    else:
+                        geneA.paralogs[orgB_id][geneB_id] = 0.0
     return 0
 
 
 def get_orthogenes() -> int:
     """helper function to create each Org and populate it with the target GEs"""
 
-    global orgs, groupIDs, path, allOGroups, orthogroups, completed, \
-           numThreads, outPath, singleCopy
+    global groupIDs, orthoFile, orgs
 
-    orthoFile = f"{path}/orthologs.tsv"
-    if (os.path.isfile(orthoFile) == False):
-        msg = f"Could not locate orthologs.tsv in {path}/"
-        sys.exit(msg)
-
-    fh      = open(orthoFile, 'r')
+    fh      = open_file(orthoFile)
     lineNum = 0
-    NColmns = [10, 12]
+    NColmns = (10, 12)
     count   = 0
-    prev    = "-1"
     ogroup  = None
 
     #
@@ -345,77 +147,39 @@ def get_orthogenes() -> int:
 
     for line in fh:
         lineNum += 1
-        if (len(line) == 0 or line[0] == '#'):
+        if (len(line) == 0 or line[0] == '#' or line[0] == '\n'):
             continue
+        idx = line.find('\t')
+        if (line[:idx] not in groupIDs):
+            continue
+
         fields = line.split('\t')
         Ncol   = len(fields)
 
         if (Ncol not in NColmns):
-            msg = f"Unexpected number of columns found at line {lineNum} in orthologs.tsv\n" + \
+            msg = f"Unexpected number of columns found in {os.path.basename(orthoFile)}\n" + \
                 "Expected 12 columns if tandem duplicates included; else 11\n" + \
                 f"Offending line: {line}"
             sys.exit(msg) 
-    
-        groupID = fields[0]
+        group_id = fields[0]
+        org      = fields[4]
+        gene_id  = fields[5]
+        if (org not in orgs):
+            orgs[org] = Org(org)
+        orgs[org].genes[gene_id] = GENE(gene_id, group_id)
+        count += 1
 
-        if (allOGroups == False and groupID not in groupIDs):
-            continue
-        org     = fields[4]
-        gene_id = fields[5]
-        added   = False
-        retro   = False
-        count  += 1
-
-        if (groupID != prev):
-            if (ogroup != None):
-                if (numThreads == 1):
-                    ogroup.outpath = outPath # will be used in single-threaded mode
-                orthogroups.append(ogroup)
-            # store a reference to this instance
-            ogroup = OrthoGroup(groupID, completed)
-            prev   = groupID
-
-        for i in range(len(orgs)):
-            if (orgs[i].id == org):
-                if (singleCopy and Ncol == 12 and fields[7] == 'R'):
-                    retro = True
-                    break # exclude retro copies
-                orgs[i].add_gene(gene_id, ogroup)
-                added = True
-                break
-        if (retro):
-            continue
-        if (added == False):
-            orgs.append(Org(org))
-            orgs[-1].add_gene(gene_id, ogroup)
-
-        #
-        # internal counter to let know when all genes
-        # have been processed
-        #
-        ogroup.increment()
 
     fh.close()
-
-    if (ogroup != None):
-        if (numThreads == 1):
-            ogroup.outpath = outPath
-        orthogroups.append(ogroup)
 
     if (count == 0):
         msg = "Unable to find any orthogroups in orthologs.tsv matching target orthogroups"
         sys.exit(msg)
 
-    global totalCount
-    totalCount = len(orthogroups)
-    print(f"Total orthogroups to retrieve: {totalCount}", file=sys.stderr)
-    print(f"Total number of genetic elements across orthogroups: {count}", file=sys.stderr)
+    # create all pairwise mappings
+    populate(orgs)
+
     return 0
-
-
-#############################################################################################################################
-#                                         Parsing Functions (Annotations)                                                   #
-#############################################################################################################################
 
 def get_annotation(org: str) -> str:
     """grab the annotation file for this org"""
@@ -519,13 +283,11 @@ def make_attrb_map(attrb: str) -> dict[str, str]:
 def get_org_sequence_ids(org: Org) -> int:
     """grab the protein ids for the genes in org"""
 
-    global lock
-
     # get the org's annotation
     ann = get_annotation(org.id)
 
     # now to loop through and parse the annotation
-    fh      = gzip.open(ann, "rt") if ann.endswith(".gz") else open(ann, 'r')
+    fh      = open_file(ann)
     lineNum = 0
     curGene = ''
     entries = ["cds", "exon"]
@@ -542,11 +304,7 @@ def get_org_sequence_ids(org: Org) -> int:
             gene_id = get_gene_id(fields[8])
             if (gene_id == ''):
                 msg = f"Failed to find a gene_id/ID at line {lineNum} in {ann} for {org.id}"
-                if (lock != None):
-                    with lock:
-                        print(msg, file=sys.stderr)
-                else:
-                    print(msg, file=sys.stderr)
+                print(msg, file=sys.stderr)
             if (gene_id in org.genes):
                 curGene = gene_id
             else:
@@ -576,10 +334,8 @@ def get_org_sequence_ids(org: Org) -> int:
 
     fh.close()
 
-    if (org.has_remaining()):
-        rem = org.get_remaining()
-        msg = f"Unable to find elements IDs for {org.id} in {ann} for " + \
-               "the following genes: " + rem
+    if (org.missing_transcripts()):
+        msg = f"Unable to find transcript IDs the gene_ids for {org.id} in {ann}"
         sys.exit(msg)
 
     return 0
@@ -600,109 +356,52 @@ def get_transcript_ids() -> int:
     
     return 0
 
-#############################################################################################################################
-#                                         Parsing Functions (Fastas)                                                       #
-#############################################################################################################################
-
-def get_protein_file(org: str) -> str:
-    """grab the peptide fasta for this org"""
+def get_blast_files(idx: int, all_orgs: list[str]) -> list[str]:
+    """grab the blast files where this org is the query"""
 
     global sppCache
 
-    gidir  = f"{sppCache}/genome_annotations"
-    target = org.split('.')
+    bstdir = f"{sppCache}/annotation_blasts"
+    target = all_orgs[idx]
 
-    if (os.path.isdir(gidir) == False):
-        msg = f"genome_annotations directory not found in {sppCache}/\n" + \
+    if (os.path.isdir(bstdir) == False):
+        msg = f"annotation_blasts directory not found in {sppCache}/\n" + \
                "Was this removed?"
         sys.exit(msg)
 
     # construct orgID.AnnotationID
-    target = target[0] + '.' + target[1]
-    peps   = glob(f"{gidir}/{target}/*.peptide.fa.gz", recursive=True)
+    bfiles = list()
+    for i in range(len(all_orgs)):
+        if (idx == i):
+            continue # skip self hit
+        bfile = f"{bstdir}/blast_{target}-{all_orgs[i]}.tsv.gz"
+        if (os.path.isfile(bfile) == False):
+            msg = f"Unable to find a blast file for {target} and {all_orgs[i]}"
+            sys.exit(msg)
+        bfiles.append(bfile)
 
-    if (len(peps) == 0):
-        msg = f"Unable to find an protein fasta file for {org} in {sppCache}/"
+    if (len(bfiles) == 0):
+        msg = f"Unable to find any blast files for for {target} in {sppCache}/annotation_blasts"
         sys.exit(msg)
 
-    pep = ''
-    for pep_ in peps:
-        pepFile = os.path.basename(pep_)
-        if (pepFile.startswith(target)):
-            pep = pep_
-            break
+    return bfiles
 
-    if (pep == ''):
-        msg = f"Unable to find a protein fasta file matching species id {org} in {sppCache}"
-        sys.exit(msg)
+def add_blast_hits(org: Org, bfiles: list[str], transcript_map: dict[str, Org]):
+    """collect all the blast hits for the pairwise files"""
 
-    return pep
+    for bfile in bfiles:
+        fname = os.path.basename(bfile)
+        other = fname.split('_')[2]
+        other = other[:other.find(".tsv")]
+        fh    = open_file(bfile)
 
+        for line in fh:
+            if (len(line) == 0 or line[0] == '#' or line[0] == '\n'):
+                continue
+        
 
-def get_seq_id(header: str) -> str:
-    """return the first characters before any spacing"""
+        fh.close()
 
-    id_ = ''
-    idx = header.find(' ')
-
-    if (idx == -1):
-        id_ = header[1:]
-    else:
-        id_ = header[1:idx]
-
-    return id_
-
-def flush_orthogroups() -> int:
-    """flush out all the incomplete orthogroups"""
-    
-    global orthogroups, curCount, totalCount, completed
-
-    if (curCount == totalCount):
-        return 0
-
-    unfinished = list()
-
-    for orthogroup in orthogroups:
-        if (orthogroup.has_remaining()):
-            orthogroup.flush()
-            unfinished.append(orthogroup.id)
-
-    count = len(unfinished)
-    if (count > 0):
-        print(f"Failed to find all sequences/transcripts in fasta files for members in {count} orthogroups", file=sys.stderr)
-        ids_ = ','.join(unfinished)
-        print(f"Orthogroups missing sequences/transcripts: {ids_}", file=sys.stderr)
-
-    return 0
-
-def rename_unfinished() -> int:
-    """rename the temporary files that are incomplete"""
-
-    global orthogroups, curCount, totalCount
-
-    if (curCount == totalCount):
-        return 0
-    
-    unfinished = list()
-
-    for orthogroup in orthogroups:
-        if (orthogroup.has_remaining()):
-            orthogroup.rename()
-            unfinished.append(orthogroup.id)
-
-    count = len(unfinished)
-    if (count > 0):
-        print("Failed to find all sequences/transcripts for members in", count, "orthologroups")
-        ids_ = ','.join(unfinished)
-        print("Orthogroups missing sequences/transcripts:", ids_)
-
-    return 0
-
-
-
-#############################################################################################################################
-#                                                    MAIN                                                                   #
-#############################################################################################################################
 
 def main() -> int:
 
