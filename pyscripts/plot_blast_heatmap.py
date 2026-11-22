@@ -13,7 +13,7 @@ from   typing import TextIO
 from   itertools import combinations
 from   collections import defaultdict
 from   matplotlib.patches import Rectangle
-from   concurrent.futures import ThreadPoolExecutor, as_completed
+from   concurrent.futures import ProcessPoolExecutor, as_completed
 
 matplotlib.use("Agg") # no display needed
 
@@ -136,17 +136,22 @@ def open_file(infile: str) -> TextIO:
 
     return gzip.open(infile, "rt") if infile.endswith(".gz") else open(infile, 'r')
 
-def run_threaded(func, jobs: list[tuple]) -> int:
-    """helper function to run functions in parallel"""
+def run_parallel(func, jobs: list[tuple]) -> list:
+    """helper function to run functions using numThreads processes"""
 
     global numThreads
 
-    with ThreadPoolExecutor(max_workers=numThreads) as executer:
-        futures = [executer.submit(func, *job) for job in jobs]
-        for future in as_completed(futures):
-            future.result()
+    results = [None] * len(jobs)
 
-    return 0
+    with ProcessPoolExecutor(max_workers=numThreads) as executor:
+        futures = dict() # future -> job index
+        for i in range(len(jobs)):
+            future          = executor.submit(func, *jobs[i])
+            futures[future] = i
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+
+    return results
 
 def add_species_names() -> int:
     """parse the species map to give each org their species name"""
@@ -345,37 +350,36 @@ def make_attrb_map(attrb: str) -> dict[str, str]:
 
     return map
 
-def get_org_transcript_ids(org: Org) -> int:
+def get_org_transcript_ids(org_id: str, ann: str, gene_ids: set[str]) -> dict[str, str]:
     """grab the protein ids for the genes in org"""
 
-    # get the org's annotation
-    ann = get_annotation(org)
-
     # now to loop through and parse the annotation
-    fh      = open_file(ann)
-    lineNum = 0
-    curGene = ''
-    entries = ["cds", "exon"]
-
+    fh          = open_file(ann)
+    lineNum     = 0
+    curGene     = ''
+    entries     = ["cds", "exon"]
+    transcripts = dict()
+    
     for line in fh:
         lineNum += 1
         if (len(line) == 0 or line[0] == '#' or line[0] == '\n'):
             continue
 
         fields = line.split('\t')
-
         if (len(fields) < 9):
-            continue # safety mechanism
+            continue
+        feat   = fields[2].lower()
 
-        feat = fields[2].lower()
-
-        # capture records such as ncgenes or pseudogenes
+        #
+        # any gene level feature (gene, pseudogene, ncRNA_gene, ...) starts a new
+        # gene block, so children of a non-target gene never leak into curGene
+        #
         if (feat.endswith("gene")):
             gene_id = get_gene_id(fields[8])
             if (gene_id == ''):
-                msg = f"Failed to find a gene_id/ID at line {lineNum} in {ann} for {org.id}"
+                msg = f"Failed to find a gene_id/ID at line {lineNum} in {ann} for {org_id}"
                 print(msg, file=sys.stderr)
-            if (gene_id in org.genes):
+            if (gene_id in gene_ids):
                 curGene = gene_id
             else:
                 curGene = ''
@@ -391,33 +395,52 @@ def get_org_transcript_ids(org: Org) -> int:
             if ("protein_version" in attrbMap):
                 prot_vs = attrbMap['protein_version']
                 prot_id = prot_id + '.' + prot_vs
-            org.add_transcript(curGene, prot_id)
+            transcripts[prot_id] = curGene
         elif ("transcript_id" in attrbMap):
             tran_id = attrbMap["transcript_id"]
             if ("transcript_version" in attrbMap):
                 tran_vs = attrbMap["transcript_version"]
                 tran_id = tran_id + '.' + tran_vs
-            org.add_transcript(curGene, tran_id)
+            transcripts[tran_id] = curGene
         elif ("Parent" in attrbMap):
             tran_id = attrbMap["Parent"]
-            org.add_transcript(curGene, tran_id)
+            transcripts[tran_id] = curGene
 
     fh.close()
 
-    if (org.missing_transcripts()):
-        msg = f"Unable to find transcript IDs the gene_ids for {org.id} in {ann}"
-        sys.exit(msg)
-
-    return 0
+    return transcripts
 
 def get_transcript_ids() -> int:
     """helper function to loop through and get the transcript ids for each gene"""
 
     global orgs
 
+    # find each annotation here, since sppCache isn't set in the worker processes
+    org_list = list(orgs.values())
+    jobs     = list()
+    for org in org_list:
+        ann = get_annotation(org)
+        jobs.append((org.id, ann, set(org.genes.keys())))
+    
     print("Parsing annotations..", end=' ', flush=True, file=sys.stderr)
-    run_threaded(get_org_transcript_ids, [(org,) for org in orgs.values()])
+    results = run_parallel(get_org_transcript_ids, jobs)
     print("done", file=sys.stderr)
+    
+    # store the results in each Org
+    for i in range(len(org_list)):
+        org = org_list[i]
+        for tran_id, gene_id in results[i].items():
+            org.add_transcript(gene_id, tran_id)
+    
+        if (org.missing_transcripts()):
+            msg = f"Unable to find transcript IDs the gene_ids for {org.id} in {jobs[i][1]}"
+            sys.exit(msg)
+    
+        # warn about target genes that never got a transcript; they can't receive blast hits
+        for gene_id, gene in org.genes.items():
+            if (len(gene.transcripts) == 0):
+                msg = f"\nWarning: no transcript IDs found for {gene_id} in {org.id}"
+                print(msg, file=sys.stderr)
     
     return 0
 
@@ -446,28 +469,31 @@ def get_blast_files(org: Org, all_orgs: list[Org]) -> list[tuple[str, Org]]:
 
     return bfiles
 
-def add_blast_hits(org: Org, bfiles: list[tuple[str, Org]]) -> int:
-    """collect all the blast hits for the pairwise files"""
+def read_blast_file(bfile: str, transA: dict[str, str], transB: dict[str, str]) -> dict[tuple[str, str], float]:
+    """parse the blast hit file and find the max percent identity between gene pairs"""
 
-    for bfile, orgB in bfiles:
-        fh = open_file(bfile)
-
-        for line in fh:
-            if (len(line) == 0 or line[0] == '#' or line[0] == '\n'):
-                continue
-            fields = line.split('\t')
-            transA = fields[0]
-            transB = fields[1]
-            if (transA not in org.transcripts or transB not in orgB.transcripts):
-                continue
-            geneA     = org.transcripts[transA]
-            geneB     = orgB.transcripts[transB]
-            percnt_id = float(fields[2])
-            org.genes[geneA].add_similarity(orgB.id, orgB.genes[geneB], percnt_id)
-        
-        fh.close()
-
-    return 0
+    best = dict() # (geneA, geneB) -> best percent identity
+    fh   = open_file(bfile)
+    
+    for line in fh:
+        #
+        # nearly every line is a non-target gene, so check the first column
+        # before splitting the line (also skips blank and '#' lines)
+        #
+        idx = line.find('\t')
+        if (idx == -1 or line[:idx] not in transA):
+            continue
+        fields = line.split('\t', 3) # only need the first 3 columns
+        if (fields[1] not in transB):
+            continue
+        pair      = (transA[fields[0]], transB[fields[1]])
+        percnt_id = float(fields[2])
+        if (pair not in best or percnt_id > best[pair]):
+            best[pair] = percnt_id
+    
+    fh.close()
+    
+    return best
 
 def load_blast_hits() -> int:
     """orechestrate loading the blast hits"""
@@ -476,19 +502,30 @@ def load_blast_hits() -> int:
 
     #
     # get all the blast files. Each thread will be responsible for
-    # writing to its assigned org
+    # writing to its assigned pairwise combination
     #
     org_list = list(orgs.values())
-    org_list.sort(key= lambda org: org.annID)
+    org_list.sort(key=lambda org: org.annID)
 
     jobs = list()
     for org in org_list:
-        bfiles = get_blast_files(org, org_list)
-        jobs.append((org, bfiles))
+        for bfile, other in get_blast_files(org, org_list):
+            jobs.append((bfile, org, other))
+
+    # only the transcript maps go to the processes (Org/GENE objects can't be sent)
+    pjobs = list()
+    for bfile, orgA, orgB in jobs:
+        pjobs.append((bfile, orgA.transcripts, orgB.transcripts))
 
     print("Loading blast hits..", end=' ', flush=True, file=sys.stderr)
-    run_threaded(add_blast_hits, jobs)
+    results = run_parallel(read_blast_file, pjobs)
     print("done", file=sys.stderr)
+
+    # only the main process writes to the GENE objects
+    for i in range(len(jobs)):
+        bfile, orgA, orgB = jobs[i]
+        for (geneA, geneB), percnt_id in results[i].items():
+            orgA.genes[geneA].add_similarity(orgB.id, orgB.genes[geneB], percnt_id)
 
     return 0
 
