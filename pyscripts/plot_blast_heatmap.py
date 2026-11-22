@@ -12,7 +12,8 @@ from   glob import glob
 from   typing import TextIO
 from   itertools import combinations
 from   collections import defaultdict
-from   matplotlib.patches import Rectangle
+from   matplotlib.lines import Line2D
+from   matplotlib.patches import Rectangle, Polygon
 from   concurrent.futures import ProcessPoolExecutor, as_completed
 
 matplotlib.use("Agg") # no display needed
@@ -27,6 +28,7 @@ orthoFile  = ''
 orgOrder   = list() # order of orgs in heatmap
 orgs       = dict()
 groupIDs   = set()
+groupNames = dict() # orthogroup ID -> label in figure
 numThreads = 1
 label_mat  = False
 
@@ -81,7 +83,7 @@ class Org:
 def parse_command_line() -> int:
     """helper function to get the user's arguments to ensure a proper start"""
 
-    global sppCache, orthoFile, groupIDs, numThreads, label_mat
+    global sppCache, orthoFile, groupIDs, numThreads, label_mat, groupNames
     
     desc   = "Code used to parse the species cache to generate a heatmap of blast hits used in the Synolog Manuscript"
     parser = argparse.ArgumentParser(description=desc)
@@ -96,11 +98,14 @@ def parse_command_line() -> int:
     lhelp = "If set, label each cell with the average percent identity"
     rhelp = "Comma separated species codes giving the axis order (eg., hsap,mmus,gacu) " + \
             "[default: alphabetical by species name]"
+    nhelp = "Comma separated labels for the orthogroups, in the same order as --ids " + \
+                "(eg., --ids 3569,13093 --names SOX9,SOX10) [default: OG <id>]"
     
     parser.add_argument("--cache",     help=chelp, type=str, required=True)
     parser.add_argument("--orthologs", help=ohelp, type=str, required=True)
     parser.add_argument("--ids",       help=ihelp, type=str, required=True)
     parser.add_argument("--order",     help=rhelp, type=str, default='')
+    parser.add_argument("--names",     help=nhelp, type=str, default='')
     parser.add_argument("--threads",   help=thelp, type=int, default=1)
     parser.add_argument("--label",     help=lhelp, action="store_true")
 
@@ -114,10 +119,13 @@ def parse_command_line() -> int:
     assert os.path.isdir(sppCache),   f"Could not locate directory {sppCache}"
     assert os.path.isfile(orthoFile), f"Could not locate file {orthoFile}"
 
+    ids = list()
     for id_ in ids_list.split(','):
         if (id_.isdigit() == False):
             sys.exit(f"Invalid orthogroup ID provided: {id_}")
         groupIDs.add(id_)
+        ids.append(id_)
+        groupNames[id_] = f"OG {id_}"
 
     assert len(groupIDs) > 1, f"Fewer than 2 orthogroup IDs were provided"
     assert numThreads > 0,    f"--threads must be at least 1"
@@ -129,6 +137,20 @@ def parse_command_line() -> int:
             if (spp != ''):
                 orgOrder.append(spp)
 
+    # label each orthogroup; user provided names pair up with --ids by position
+    if (args.names != ''):
+        names = list()
+        for name in args.names.split(','):
+            names.append(name.strip())
+        if (len(names) != len(ids)):
+            msg = f"--names has {len(names)} labels but --ids has {len(ids)} orthogroups\n" + \
+                   "Provide one label per orthogroup, in the same order"
+            sys.exit(msg)
+        for i in range(len(ids)):
+            if (names[i] == ''):
+                sys.exit(f"Empty label in --names for orthogroup {ids[i]}")
+            groupNames[ids[i]] = names[i]
+        
     return 0
 
 def open_file(infile: str) -> TextIO:
@@ -655,6 +677,33 @@ def construct_matrices(ogroup1: str, ogroup2: str, order: list[str]) -> tuple[np
 
     return (orth, para)
 
+def outline_triangles(ax, N: int, lower_color: str, upper_color: str) -> int:
+    """draw one border around the lower triangle and another around the upper triangle"""
+
+    #
+    # cell (row i, col j) spans x = j-0.5..j+0.5 and y = i-0.5..i+0.5 (row 0 on top)
+    # The lower triangle's edge is a staircase that follows the black diagonal:
+    # start at the top-left of cell (1, 0), step right/down along the diagonal,
+    # then along the bottom edge and back up the left edge
+    #
+    lower = [(-0.5, 0.5)]
+    for k in range(1, N):
+        lower.append((k - 0.5, k - 0.5))
+        lower.append((k - 0.5, k + 0.5))
+    lower.append((-0.5, N - 0.5))
+
+    # the upper triangle is the mirror image across the diagonal (swap x and y)
+    upper = list()
+    for x, y in lower:
+        upper.append((y, x))
+
+    for points, color in ((lower, lower_color), (upper, upper_color)):
+        border = Polygon(points, closed=True, fill=False, edgecolor=color, linewidth=2.5,
+                         joinstyle="miter", zorder=3, clip_on=False)
+        ax.add_patch(border)
+
+    return 0
+
 def draw_heatmap(ax, mat: np.ndarray, labels: list[str], cmap, vmin: float, vmax: float) -> object:
     """draw one heatmap panel; diagonal is black, missing data (NaN) is light grey"""
 
@@ -703,7 +752,7 @@ def draw_heatmap(ax, mat: np.ndarray, labels: list[str], cmap, vmin: float, vmax
 def plot_pair(group1: str, group2: str, order: list[str], prefix: str) -> int:
     """make the side-by-side ortholog / paralog figure for one pair of orthogroups"""
 
-    global orgs
+    global orgs, groupNames
 
     orth, para = construct_matrices(group1, group2, order)
     N          = len(order)
@@ -739,8 +788,20 @@ def plot_pair(group1: str, group2: str, order: list[str], prefix: str) -> int:
     draw_heatmap(axes[0], orth, labels, cmap, vmin, vmax)
     im = draw_heatmap(axes[1], para, labels, cmap, vmin, vmax)
 
-    axes[0].set_title(f"Orthologs\nlower: OG {group1}   upper: OG {group2}", fontsize=10)
-    axes[1].set_title(f"Paralogs\nrows: OG {group1}   columns: OG {group2}", fontsize=10)
+    # draw borders for the synolog orthogroups
+    lowerColor = "#E66100"
+    upperColor = "#009900"
+    outline_triangles(axes[0], N, lowerColor, upperColor)
+
+    name1   = groupNames[group1]
+    name2   = groupNames[group2]
+    handles = [Line2D([0], [0], color=lowerColor, linewidth=2.5, label=name1),
+               Line2D([0], [0], color=upperColor, linewidth=2.5, label=name2)]
+    axes[0].legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2,
+                   frameon=False, fontsize=9, handlelength=1.5)
+
+    axes[0].set_title("Orthologs", fontsize=10, pad=22)
+    axes[1].set_title(f"Paralogs\nrows: {name1}   columns: {name2}", fontsize=10)
 
     cbar = fig.colorbar(im, ax=axes, shrink=0.8, pad=0.02)
     cbar.set_label("Mean reciprocal best percent identity (%)")
