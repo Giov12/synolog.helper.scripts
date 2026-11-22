@@ -28,13 +28,15 @@ orgOrder   = list() # order of orgs in heatmap
 orgs       = dict()
 groupIDs   = set()
 numThreads = 1
+label_mat  = False
 
 class GENE:
 
     __slots__ = ("id", "transcripts", "orthologs", "paralogs", "group_id")
 
     #
-    # others -> Other Org -> Gene_ID -> Blast Hit
+    # orthologs -> Other Org -> Gene_ID -> Best Blast Hit (same orthogroup)
+    # paralogs  -> Other Org -> Gene_ID -> Best Blast Hit (other orthogroup)
     #
     def __init__(self, id_: str, group_id: str) -> None:
         self.id          = id_
@@ -50,7 +52,6 @@ class GENE:
         else:
             self.paralogs[org][gene.id] = max(self.paralogs[org][gene.id], similarity)
         return 0
-
 
 class Org:
 
@@ -80,7 +81,7 @@ class Org:
 def parse_command_line() -> int:
     """helper function to get the user's arguments to ensure a proper start"""
 
-    global sppCache, orthoFile, groupIDs, numThreads
+    global sppCache, orthoFile, groupIDs, numThreads, label_mat
     
     desc   = "Code used to parse the species cache to generate a heatmap of blast hits used in the Synolog Manuscript"
     parser = argparse.ArgumentParser(description=desc)
@@ -92,20 +93,23 @@ def parse_command_line() -> int:
     chelp = "path to species cache containing the species used in synolog analysis [required]"
     ohelp = "orthologs.tsv file containing the orthogroups to plot [required]"
     thelp = "number of threads [default: 1]"
+    lhelp = "If set, label each cell with the average percent identity"
     rhelp = "Comma separated species codes giving the axis order (eg., hsap,mmus,gacu) " + \
             "[default: alphabetical by species name]"
     
-    parser.add_argument("--cache",       help=chelp, type=str, required=True)
-    parser.add_argument("--orthologs",   help=ohelp, type=str, required=True)
-    parser.add_argument("--ids",         help=ihelp, type=str, required=True)
-    parser.add_argument("--order",       help=rhelp, type=str, default='')
-    parser.add_argument("--threads",     help=thelp, type=int, default=1)
+    parser.add_argument("--cache",     help=chelp, type=str, required=True)
+    parser.add_argument("--orthologs", help=ohelp, type=str, required=True)
+    parser.add_argument("--ids",       help=ihelp, type=str, required=True)
+    parser.add_argument("--order",     help=rhelp, type=str, default='')
+    parser.add_argument("--threads",   help=thelp, type=int, default=1)
+    parser.add_argument("--label",     help=lhelp, action="store_true")
 
     args       = parser.parse_args()
     sppCache   = args.cache
     orthoFile  = args.orthologs
     ids_list   = args.ids
     numThreads = args.threads
+    label_mat  = args.label
 
     assert os.path.isdir(sppCache),   f"Could not locate directory {sppCache}"
     assert os.path.isfile(orthoFile), f"Could not locate file {orthoFile}"
@@ -115,7 +119,7 @@ def parse_command_line() -> int:
             sys.exit(f"Invalid orthogroup ID provided: {id_}")
         groupIDs.add(id_)
 
-    assert len(groupIDs) > 1, f"Greater than 1 orthogroup IDs were provided"
+    assert len(groupIDs) > 1, f"Fewer than 2 orthogroup IDs were provided"
     assert numThreads > 0,    f"--threads must be at least 1"
 
     if (args.order != ''):
@@ -181,32 +185,15 @@ def add_species_names() -> int:
 
     return 0
 
-def populate(orgs: dict[str, Org]) -> int:
-    """helper function to initiate all defaults"""
-
-    for orgA_id, orgA in orgs.items():
-        genes = orgA.genes
-        for orgB_id, orgB in orgs.items():
-            if (orgA_id == orgB_id):
-                continue
-            for geneA_id, geneA in genes.items():
-                for geneB_id, geneB in orgB.genes.items():
-                    if (geneA.group_id == geneB.group_id):
-                        geneA.orthologs[orgB_id][geneB_id] = 0.0
-                    else:
-                        geneA.paralogs[orgB_id][geneB_id] = 0.0
-    return 0
-
 def get_orthogenes() -> int:
     """helper function to create each Org and populate it with the target GEs"""
 
     global groupIDs, orthoFile, orgs
 
     fh      = open_file(orthoFile)
-    lineNum = 0
     NColmns = (10, 12)
     count   = 0
-    ogroup  = None
+    found   = set()
 
     #
     # if tandem duplicates are include vs not include
@@ -227,7 +214,6 @@ def get_orthogenes() -> int:
     #
 
     for line in fh:
-        lineNum += 1
         if (len(line) == 0 or line[0] == '#' or line[0] == '\n'):
             continue
         idx = line.find('\t')
@@ -239,7 +225,7 @@ def get_orthogenes() -> int:
 
         if (Ncol not in NColmns):
             msg = f"Unexpected number of columns found in {os.path.basename(orthoFile)}\n" + \
-                "Expected 12 columns if tandem duplicates included; else 11\n" + \
+                "Expected 12 columns if tandem duplicates included; else 10\n" + \
                 f"Offending line: {line}"
             sys.exit(msg) 
         group_id = fields[0]
@@ -249,7 +235,7 @@ def get_orthogenes() -> int:
             orgs[org] = Org(org)
         orgs[org].genes[gene_id] = GENE(gene_id, group_id)
         count += 1
-
+        found.add(group_id)
 
     fh.close()
 
@@ -257,42 +243,40 @@ def get_orthogenes() -> int:
         msg = "Unable to find any orthogroups in orthologs.tsv matching target orthogroups"
         sys.exit(msg)
 
-    # create all pairwise mappings
-    populate(orgs)
+    for group_id in groupIDs:
+        if (group_id not in found):
+            msg = f"Orthogroup {group_id} not found in {os.path.basename(orthoFile)}"
+            sys.exit(msg)
 
     return 0
 
-def get_annotation(org: str) -> str:
+def get_annotation(org: Org) -> str:
     """grab the annotation file for this org"""
 
     global sppCache
 
     gidir  = f"{sppCache}/genome_integrations"
-    target = org.split('.')
 
     if (os.path.isdir(gidir) == False):
         msg = f"genome_integrations directory not found in {sppCache}/\n" + \
                "Was this removed?"
         sys.exit(msg)
 
-    # construct orgID.IntegrationID
-    target = target[0] + '.' + target[2]
-
-    anns = glob(f"{gidir}/{target}/*.g*.gz", recursive=True)
+    anns = glob(f"{gidir}/{org.annID}/*.g*.gz", recursive=True)
 
     if (len(anns) == 0):
-        msg = f"Unable to find an annotation file for {org} in {sppCache}/"
+        msg = f"Unable to find an annotation file for {org.id} in {sppCache}/"
         sys.exit(msg)
 
     ann = ''
     for an_ in anns:
         annFile = os.path.basename(an_)
-        if (annFile.startswith(target)):
+        if (annFile.startswith(org.annID)):
             ann = an_
             break
 
     if (ann == ''):
-        msg = f"Unable to find an anotation file matching species id {org} in {sppCache}"
+        msg = f"Unable to find an anotation file matching species id {org.id} in {sppCache}"
         sys.exit(msg)
 
     return ann
@@ -365,7 +349,7 @@ def get_org_transcript_ids(org: Org) -> int:
     """grab the protein ids for the genes in org"""
 
     # get the org's annotation
-    ann = get_annotation(org.id)
+    ann = get_annotation(org)
 
     # now to loop through and parse the annotation
     fh      = open_file(ann)
@@ -379,9 +363,14 @@ def get_org_transcript_ids(org: Org) -> int:
             continue
 
         fields = line.split('\t')
-        feat   = fields[2].lower()
 
-        if (feat == "gene"):
+        if (len(fields) < 9):
+            continue # safety mechanism
+
+        feat = fields[2].lower()
+
+        # capture records such as ncgenes or pseudogenes
+        if (feat.endswith("gene")):
             gene_id = get_gene_id(fields[8])
             if (gene_id == ''):
                 msg = f"Failed to find a gene_id/ID at line {lineNum} in {ann} for {org.id}"
@@ -449,7 +438,7 @@ def get_blast_files(org: Org, all_orgs: list[Org]) -> list[tuple[str, Org]]:
     for other in all_orgs:
         if (org.id == other.id):
             continue # skip self
-        bfile = f"{bstdir}/blast_{org.annID}-{other.annID}.tsv.gz"
+        bfile = f"{bstdir}/blast_{org.annID}_{other.annID}.tsv.gz"
         if (os.path.isfile(bfile) == False):
             msg = f"Unable to find a blast file for {org.id} and {other.id}"
             sys.exit(msg)
@@ -557,17 +546,42 @@ def mean_paralog_similarity(orgA: Org, groupA: str, orgB: Org, groupB: str) -> f
 
     return total / count
 
-def construct_matrix() -> int:
+def get_org_order() -> list[str]:
+    """return the order the orgs will be layed out in the heatmap"""
+
+    global orgs, orgOrder
+
+    # default to alphabetical by species name
+    if (len(orgOrder) == 0):
+        order = list(orgs.keys())
+        order.sort(key = lambda org: (orgs[org].name, org))
+        return order
+
+    #
+    # ensure that the ordering matches what is actually present
+    #
+    orderMap = dict()
+    for org_id in orgs.keys():
+        orderMap[org_id.split('.')[0]] = org_id
+
+    order = list()
+    for org_id in orgOrder:
+        if (org_id not in orderMap):
+            msg = f"--order contains a species not in the selected orthogroups: {org_id}"
+            sys.exit(msg)
+        order.append(orderMap[org_id])
+
+    for org_id in orderMap.keys():
+        if (org_id not in orgOrder):
+            msg = f"--order is missing species: {org_id}"
+            sys.exit(msg)
+            
+    return order
+
+def construct_matrices(ogroup1: str, ogroup2: str, order: list[str]) -> tuple[np.ndarray, np.ndarray]:
     """construct the 2D matrix by organizing genes by their orthogroup ID"""
 
     global orgs
-
-    # group -> list[tuple[org_id, gene_id]]
-    orthogroups = defaultdict(list)
-
-    for org_id, org in orgs.items():
-        for gene_id, gene in org.genes.items():
-            orthogroups[gene.group_id].append((org_id, gene_id))
 
     # 
     # Matrix description
@@ -586,17 +600,150 @@ def construct_matrix() -> int:
     # orgs will be used to sort the attributes. 
     #
 
+    N    = len(order)
+    orth = np.full((N, N), np.nan) # self comparisons are NAN
+    para = np.full((N, N), np.nan)
+
+    for i in range(N):
+        orgI = orgs[order[i]]
+        for j in range(N):
+            if (i == j):
+                continue
+            orgJ = orgs[order[j]]
+            if (i > j):
+                orth[i][j] = mean_ortholog_similarity(orgI, orgJ, ogroup1)
+            else:
+                orth[i][j] = mean_ortholog_similarity(orgI, orgJ, ogroup2)
+            para[i][j] = mean_paralog_similarity(orgI, ogroup1, orgJ, ogroup2)
+
+    return (orth, para)
+
+def draw_heatmap(ax, mat: np.ndarray, labels: list[str], cmap, vmin: float, vmax: float) -> object:
+    """draw one heatmap panel; diagonal is black, missing data (NaN) is light grey"""
+
+    global label_mat
+
+    N  = len(labels)
+    im = ax.imshow(mat, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest", aspect="equal")
+
+    # black diagonal (self comparisons not computed)
+    for i in range(N):
+        ax.add_patch(Rectangle((i - 0.5, i - 0.5), 1, 1, facecolor="black", edgecolor="none"))
+
+    # thin white gaps between cells
+    ax.set_xticks(np.arange(-0.5, N, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, N, 1), minor=True)
+    ax.grid(which="minor", color="white", linewidth=1.5)
+    ax.tick_params(which="minor", length=0)
+    ax.tick_params(which="major", length=0)
+    
+    # species names on both axes
+    ax.set_xticks(np.arange(N))
+    ax.set_yticks(np.arange(N))
+    ax.set_xticklabels(labels, rotation=45, ha="right", rotation_mode="anchor", style="italic")
+    ax.set_yticklabels(labels, style="italic")
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    
+    if (label_mat == False):
+        return im
+    
+    # write the value in each cell; white text on dark cells
+    mid = (vmin + vmax) / 2.0
+    for i in range(N):
+        for j in range(N):
+            if (i == j or np.isnan(mat[i][j])):
+                continue
+            if (mat[i][j] > mid):
+                color = "white"
+            else:
+                color = "#1a1a1a"
+            ax.text(j, i, f"{mat[i][j]:.0f}", ha="center", va="center", fontsize=7, color=color)
+    
+    return im
+
+def plot_pair(group1: str, group2: str, order: list[str], prefix: str) -> int:
+    """make the side-by-side ortholog / paralog figure for one pair of orthogroups"""
+
+    global orgs
+
+    orth, para = construct_matrices(group1, group2, order)
+    N          = len(order)
+
+    labels = list()
+    for org_id in order:
+        labels.append(orgs[org_id].name)
+
+    # one shared color scale so the two panels are directly comparable
+    vmin = float("inf")
+    vmax = -1
+    for mat in (orth, para):
+        for i in range(N):
+            for j in range(N):
+                if (np.isnan(mat[i][j]) == False):
+                    vmin = min(mat[i][j], vmin)
+                    vmax = max(mat[i][j], vmax)
+
+    if (vmax == -1):
+        msg = f"No data to plot for orthogroups {group1} and {group2}"
+        sys.exit(msg)
+
+    # edge case when they are equal
+    if (vmin >= vmax):
+        vmax = vmin + 1.0
+
+    cmap = plt.get_cmap("Blues").copy()
+    cmap.set_bad("#d9d9d9") # org has no gene in that orthogroup
+
+    side      = max(3.0, 0.42 * N + 1.5)
+    fig, axes = plt.subplots(1, 2, figsize=(2 * side + 1.2, side + 0.6), constrained_layout=True)
+
+    draw_heatmap(axes[0], orth, labels, cmap, vmin, vmax)
+    im = draw_heatmap(axes[1], para, labels, cmap, vmin, vmax)
+
+    axes[0].set_title(f"Orthologs\nlower: OG {group1}   upper: OG {group2}", fontsize=10)
+    axes[1].set_title(f"Paralogs\nrows: OG {group1}   columns: OG {group2}", fontsize=10)
+
+    cbar = fig.colorbar(im, ax=axes, shrink=0.8, pad=0.02)
+    cbar.set_label("Mean reciprocal best percent identity (%)")
+    cbar.outline.set_visible(False)
+
+    for ext in ("png", "pdf"):
+        fig.savefig(f"{prefix}.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Wrote {prefix}.png and {prefix}.pdf", file=sys.stderr)
+
+    return 0
+
+def plot() -> int:
+    """one figure per pair of orthogroups (just one figure when 2 IDs are given)"""
+
+    global groupIDs
+
+    order  = get_org_order()
+    groups = list(groupIDs)
+    groups.sort(key=int)
+    pairs  = list(combinations(groups, 2))
+
+    for group1, group2 in pairs:
+        prefix = f"{group1}_{group2}_percent_identity_heatmap"
+        plot_pair(group1, group2, order, prefix)
+
     return 0
 
 def main() -> int:
-
-    global allOGroups, Segmental
+    """entry point to this illustration-focused tool"""
     
     # retrieve the arguments
     parse_command_line()
 
     # determine where the gene_ids are coming from
     get_orthogenes()
+
+    # add species names
+    add_species_names()
 
     # get the target genes' transcripts ids
     get_transcript_ids()
@@ -605,6 +752,7 @@ def main() -> int:
     load_blast_hits()
 
     # now to plot
+    plot()
 
     return 0
         
