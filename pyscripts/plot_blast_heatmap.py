@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
+from   __future__ import annotations
 
 import argparse
 import sys
 import os
 import gzip
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
 from   glob import glob
 from   typing import TextIO
+from   itertools import combinations
 from   collections import defaultdict
+from   matplotlib.patches import Rectangle
 from   concurrent.futures import ThreadPoolExecutor, as_completed
 
+matplotlib.use("Agg") # no display needed
 
 # 
 # this code is specifically designed for working with the
@@ -17,13 +24,14 @@ from   concurrent.futures import ThreadPoolExecutor, as_completed
 
 sppCache   = ''
 orthoFile  = ''
+orgOrder   = list() # order of orgs in heatmap
 orgs       = dict()
 groupIDs   = set()
 numThreads = 1
 
 class GENE:
 
-    __slots__ = ("id", "transcripts", "others", "group_id")
+    __slots__ = ("id", "transcripts", "orthologs", "paralogs", "group_id")
 
     #
     # others -> Other Org -> Gene_ID -> Blast Hit
@@ -31,16 +39,27 @@ class GENE:
     def __init__(self, id_: str, group_id: str) -> None:
         self.id          = id_
         self.group_id    = group_id
-        self.orthologs   = defaultdict(lambda d: defaultdict(float))
-        self.paralogs    = defaultdict(lambda d: defaultdict(float))
+        self.orthologs   = defaultdict(lambda: defaultdict(float))
+        self.paralogs    = defaultdict(lambda: defaultdict(float))
         self.transcripts = set()
+
+    def add_similarity(self, org: str, gene: GENE, similarity: float) -> int:
+        # helper function to determine which category this falls into
+        if (gene.group_id == self.group_id):
+            self.orthologs[org][gene.id] = max(self.orthologs[org][gene.id], similarity)
+        else:
+            self.paralogs[org][gene.id] = max(self.paralogs[org][gene.id], similarity)
+        return 0
+
 
 class Org:
 
-    __slots__ = ("id", "name", "genes", "transcripts")
+    __slots__ = ("id", "annID", "name", "genes", "transcripts")
 
     def __init__(self, id_ : str) -> None:
+        fields           = id_.split('.')
         self.id          = id_
+        self.annID       = fields[0] + '.' + fields[2]
         self.name        = ''
         self.genes       = dict() # gene id -> Gene
         self.transcripts = dict() # transcript id -> gene id
@@ -52,6 +71,10 @@ class Org:
 
     def missing_transcripts(self) -> bool:
         return len(self.transcripts) == 0
+
+    def genes_in_group(self, group_id: str) -> list[GENE]:
+        """helper function to get all genes in this orthogroup"""
+        return [gene for gene in self.genes.values() if gene.group_id == group_id]
 
     
 def parse_command_line() -> int:
@@ -69,10 +92,13 @@ def parse_command_line() -> int:
     chelp = "path to species cache containing the species used in synolog analysis [required]"
     ohelp = "orthologs.tsv file containing the orthogroups to plot [required]"
     thelp = "number of threads [default: 1]"
+    rhelp = "Comma separated species codes giving the axis order (eg., hsap,mmus,gacu) " + \
+            "[default: alphabetical by species name]"
     
     parser.add_argument("--cache",       help=chelp, type=str, required=True)
     parser.add_argument("--orthologs",   help=ohelp, type=str, required=True)
     parser.add_argument("--ids",         help=ihelp, type=str, required=True)
+    parser.add_argument("--order",       help=rhelp, type=str, default='')
     parser.add_argument("--threads",     help=thelp, type=int, default=1)
 
     args       = parser.parse_args()
@@ -89,8 +115,15 @@ def parse_command_line() -> int:
             sys.exit(f"Invalid orthogroup ID provided: {id_}")
         groupIDs.add(id_)
 
-    assert len(groupIDs) > 0, f"No orthogroup IDs were provided"
+    assert len(groupIDs) > 1, f"Greater than 1 orthogroup IDs were provided"
     assert numThreads > 0,    f"--threads must be at least 1"
+
+    if (args.order != ''):
+        global orgOrder
+        for spp in args.order.split(','):
+            spp = spp.strip()
+            if (spp != ''):
+                orgOrder.append(spp)
 
     return 0
 
@@ -98,6 +131,55 @@ def open_file(infile: str) -> TextIO:
     """helper function to shorten and in-line conditional"""
 
     return gzip.open(infile, "rt") if infile.endswith(".gz") else open(infile, 'r')
+
+def run_threaded(func, jobs: list[tuple]) -> int:
+    """helper function to run functions in parallel"""
+
+    global numThreads
+
+    with ThreadPoolExecutor(max_workers=numThreads) as executer:
+        futures = [executer.submit(func, *job) for job in jobs]
+        for future in as_completed(futures):
+            future.result()
+
+    return 0
+
+def add_species_names() -> int:
+    """parse the species map to give each org their species name"""
+
+    global orgs, sppCache
+
+    spmap = f"{sppCache}/species.map"
+
+    assert os.path.isfile(spmap), f"Error: Unable to locate species.map in synolog database"
+
+    fh     = open_file(spmap)
+    orgMap = {org.split('.')[0]: org for org in orgs.keys()}
+
+    for line in fh:
+        if (len(line) == 0 or line[0] == '#' or line[0] == '\n'):
+            continue
+        fields = line.split('\t')
+        org    = fields[0]
+        if (org in orgMap):
+            entry   = fields[1]
+            entries = entry.split(' ')
+            species = entries[0][0] + ". " + entries[1]
+            orgs[orgMap[org]].name = species
+
+    fh.close()
+
+    missing = list()
+    for org in orgs.values():
+        if (org.name == ''):
+            missing.append(org.id)
+
+    if (len(missing) > 0):
+        msg = f"Unable to find all orgs in species map\n" + \
+              f"Missing: {', '.join(missing)}"
+        sys.exit(msg)
+
+    return 0
 
 def populate(orgs: dict[str, Org]) -> int:
     """helper function to initiate all defaults"""
@@ -114,7 +196,6 @@ def populate(orgs: dict[str, Org]) -> int:
                     else:
                         geneA.paralogs[orgB_id][geneB_id] = 0.0
     return 0
-
 
 def get_orthogenes() -> int:
     """helper function to create each Org and populate it with the target GEs"""
@@ -280,7 +361,7 @@ def make_attrb_map(attrb: str) -> dict[str, str]:
 
     return map
 
-def get_org_sequence_ids(org: Org) -> int:
+def get_org_transcript_ids(org: Org) -> int:
     """grab the protein ids for the genes in org"""
 
     # get the org's annotation
@@ -294,7 +375,7 @@ def get_org_sequence_ids(org: Org) -> int:
 
     for line in fh:
         lineNum += 1
-        if (len(line) == '' or line[0] == '#'):
+        if (len(line) == 0 or line[0] == '#' or line[0] == '\n'):
             continue
 
         fields = line.split('\t')
@@ -343,26 +424,20 @@ def get_org_sequence_ids(org: Org) -> int:
 def get_transcript_ids() -> int:
     """helper function to loop through and get the transcript ids for each gene"""
 
-    global orgs, numThreads
+    global orgs
 
     print("Parsing annotations..", end=' ', flush=True, file=sys.stderr)
-
-    with ThreadPoolExecutor(max_workers=numThreads) as executor:
-        futures = [executor.submit(get_org_sequence_ids, org) for org in orgs]
-        for future in as_completed(futures):
-            future.result()
-
+    run_threaded(get_org_transcript_ids, [(org,) for org in orgs.values()])
     print("done", file=sys.stderr)
     
     return 0
 
-def get_blast_files(idx: int, all_orgs: list[str]) -> list[str]:
-    """grab the blast files where this org is the query"""
+def get_blast_files(org: Org, all_orgs: list[Org]) -> list[tuple[str, Org]]:
+    """grab the blast files where this org is the query, paired with the other subject orgs"""
 
     global sppCache
 
     bstdir = f"{sppCache}/annotation_blasts"
-    target = all_orgs[idx]
 
     if (os.path.isdir(bstdir) == False):
         msg = f"annotation_blasts directory not found in {sppCache}/\n" + \
@@ -371,37 +446,147 @@ def get_blast_files(idx: int, all_orgs: list[str]) -> list[str]:
 
     # construct orgID.AnnotationID
     bfiles = list()
-    for i in range(len(all_orgs)):
-        if (idx == i):
-            continue # skip self hit
-        bfile = f"{bstdir}/blast_{target}-{all_orgs[i]}.tsv.gz"
+    for other in all_orgs:
+        if (org.id == other.id):
+            continue # skip self
+        bfile = f"{bstdir}/blast_{org.annID}-{other.annID}.tsv.gz"
         if (os.path.isfile(bfile) == False):
-            msg = f"Unable to find a blast file for {target} and {all_orgs[i]}"
+            msg = f"Unable to find a blast file for {org.id} and {other.id}"
             sys.exit(msg)
-        bfiles.append(bfile)
-
-    if (len(bfiles) == 0):
-        msg = f"Unable to find any blast files for for {target} in {sppCache}/annotation_blasts"
-        sys.exit(msg)
+        bfiles.append((bfile, other))
 
     return bfiles
 
-def add_blast_hits(org: Org, bfiles: list[str], transcript_map: dict[str, Org]):
+def add_blast_hits(org: Org, bfiles: list[tuple[str, Org]]) -> int:
     """collect all the blast hits for the pairwise files"""
 
-    for bfile in bfiles:
-        fname = os.path.basename(bfile)
-        other = fname.split('_')[2]
-        other = other[:other.find(".tsv")]
-        fh    = open_file(bfile)
+    for bfile, orgB in bfiles:
+        fh = open_file(bfile)
 
         for line in fh:
             if (len(line) == 0 or line[0] == '#' or line[0] == '\n'):
                 continue
+            fields = line.split('\t')
+            transA = fields[0]
+            transB = fields[1]
+            if (transA not in org.transcripts or transB not in orgB.transcripts):
+                continue
+            geneA     = org.transcripts[transA]
+            geneB     = orgB.transcripts[transB]
+            percnt_id = float(fields[2])
+            org.genes[geneA].add_similarity(orgB.id, orgB.genes[geneB], percnt_id)
         
-
         fh.close()
 
+    return 0
+
+def load_blast_hits() -> int:
+    """orechestrate loading the blast hits"""
+
+    global orgs
+
+    #
+    # get all the blast files. Each thread will be responsible for
+    # writing to its assigned org
+    #
+    org_list = list(orgs.values())
+    org_list.sort(key= lambda org: org.annID)
+
+    jobs = list()
+    for org in org_list:
+        bfiles = get_blast_files(org, org_list)
+        jobs.append((org, bfiles))
+
+    print("Loading blast hits..", end=' ', flush=True, file=sys.stderr)
+    run_threaded(add_blast_hits, jobs)
+    print("done", file=sys.stderr)
+
+    return 0
+
+def ortholog_similarity(orgA: Org, geneA: GENE, orgB: Org, geneB: GENE) -> float:
+    """similarity between two genes of the SAME orthogroup"""
+
+    AtoB = geneA.orthologs[orgB.id][geneB.id]
+    BtoA = geneB.orthologs[orgA.id][geneA.id]
+
+    return (AtoB + BtoA) / 2.0
+
+def paralog_similarity(orgA: Org, geneA: GENE, orgB: Org, geneB: GENE) -> float:
+    """similarity between two genes of DIFFERENT orthogroups"""
+
+    AtoB = geneA.paralogs[orgB.id][geneB.id]
+    BtoA = geneB.paralogs[orgA.id][geneA.id]
+
+    return (AtoB + BtoA) / 2.0
+
+def mean_ortholog_similarity(orgA: Org, orgB: Org, group: str) -> float:
+    """average ortholog similarity over all orgA x orgB gene pairs in one orthogroup"""
+
+    genesA = orgA.genes_in_group(group)
+    genesB = orgB.genes_in_group(group)
+
+    # one of the orgs has no gene in this orthogroup
+    if (len(genesA) == 0 or len(genesB) == 0):
+        return np.nan
+
+    total = 0.0
+    count = 0
+    for geneA in genesA:
+        for geneB in genesB:
+            total += ortholog_similarity(orgA, geneA, orgB, geneB)
+            count += 1
+
+    return total / count
+
+def mean_paralog_similarity(orgA: Org, groupA: str, orgB: Org, groupB: str) -> float:
+    """average paralog similarity over all (orgA genes in groupA) x (orgB genes in groupB)"""
+
+    genesA = orgA.genes_in_group(groupA)
+    genesB = orgB.genes_in_group(groupB)
+
+    # one of the orgs has no gene in one of the orthogroups
+    if (len(genesA) == 0 or len(genesB) == 0):
+        return np.nan
+
+    total = 0.0
+    count = 0
+    for geneA in genesA:
+        for geneB in genesB:
+            total += paralog_similarity(orgA, geneA, orgB, geneB)
+            count += 1
+
+    return total / count
+
+def construct_matrix() -> int:
+    """construct the 2D matrix by organizing genes by their orthogroup ID"""
+
+    global orgs
+
+    # group -> list[tuple[org_id, gene_id]]
+    orthogroups = defaultdict(list)
+
+    for org_id, org in orgs.items():
+        for gene_id, gene in org.genes.items():
+            orthogroups[gene.group_id].append((org_id, gene_id))
+
+    # 
+    # Matrix description
+    # The matrix will be N by N where N = len(orgs)
+    # In most cases, only 2 orthogroup IDs will be provided
+    # So the left/bottom triangle will have genes from one orthogroup
+    # while the right/top triangle will have genes from the other orthogroup
+    # Diagonal lines will be black to illustrate that there was no percent identity
+    # calculated to self, because that is always going to be 100% and is not
+    # actually computed in Synolog's framework. For each square linking two orthologs,
+    # we will take the average percent identity between the two
+    #
+    # To illustrate how this is advantagous, we will use this matrix to build a very similar
+    # heatmap next to the first one, but we instead of the average sequence similarity between
+    # orthologs, it will be the average sequence similarity between the paralogs
+    # orgs will be used to sort the attributes. 
+    #
+
+    return 0
 
 def main() -> int:
 
@@ -411,20 +596,15 @@ def main() -> int:
     parse_command_line()
 
     # determine where the gene_ids are coming from
-    if (Segmental):
-        get_segmental_duplications()
-    else:
-        # retrieve the orthogroup ids if provided
-        get_orthogroups()
-
-        # get the target gene ids
-        get_orthogenes()
+    get_orthogenes()
 
     # get the target genes' transcripts ids
     get_transcript_ids()
 
-    # now to get all the sequences
-    get_sequences()
+    # load the blast hits
+    load_blast_hits()
+
+    # now to plot
 
     return 0
         
